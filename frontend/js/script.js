@@ -103,7 +103,9 @@ document.addEventListener('DOMContentLoaded', () => {
             resultsGrid.appendChild(col);
         });
     }
-     function setupAutocomplete(inputEl, suggestionsBoxEl, type) {
+
+    // --- REUSABLE AUTOCOMPLETE FUNCTION ---
+    function setupAutocomplete(inputEl, suggestionsBoxEl, type) {
         let activeIndex = -1;
 
         const handleInput = async (event) => {
@@ -113,18 +115,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
             try {
-                // Use the live API for movies and books, dummy data for music
-                let suggestions = [];
-                if (type === 'movie' || type === 'book') {
-                    const response = await fetch(`http://127.0.0.1:8000/search/${type}/${query}`);
-                    const data = await response.json();
-                    suggestions = data.results || [];
-                } else if (type === 'music') {
-                    suggestions = dummyMusicRecommendations
-                        .filter(song => song.track_name.toLowerCase().includes(query.toLowerCase()))
-                        .map(song => song.track_name);
-                }
-
+                // Use the live API for both movies and books
+                const response = await fetch(`http://127.0.0.1:8000/search/${type}/${query}`);
+                const data = await response.json();
+                let suggestions = data.results || [];
                 suggestionsBoxEl.innerHTML = '';
                 activeIndex = -1;
                 if (suggestions.length > 0) {
@@ -137,7 +131,6 @@ document.addEventListener('DOMContentLoaded', () => {
                             suggestionsBoxEl.innerHTML = '';
                             if (type === 'movie') movieRecommendBtn.click();
                             if (type === 'book') bookRecommendBtn.click();
-                            if (type === 'music') musicRecommendBtn.click();
                         });
                         suggestionsBoxEl.appendChild(item);
                     });
@@ -177,6 +170,12 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
     }
+
+    // --- SETUP AUTOCOMPLETE FOR EACH TAB ---
+    setupAutocomplete(movieInput, movieSuggestionsBox, 'movie');
+    setupAutocomplete(bookInput, bookSuggestionsBox, 'book');
+    // We will set up music later
+
     // --- REUSABLE RECOMMENDATION LOGIC ---
     async function fetchAndDisplayMovieRecs(movieTitle) {
         if (!movieTitle) return;
@@ -203,59 +202,58 @@ document.addEventListener('DOMContentLoaded', () => {
             finalSeconds = parseInt(timerSpan.textContent) || 0;
             stopLoading(timer);
             if (!resultsGrid.innerHTML.includes('error-message')) {
-                statusMessage.textContent = `✨ Recommendations loaded in ${finalSeconds} seconds.`;
+                statusMessage.textContent = `Recommendations loaded in ${finalSeconds} seconds.`;
             }
         }
     }
 
-    // --- MOVIE LOGIC (LIVE API) ---
-    const handleMovieInput = async (event) => {
-        const query = event.target.value;
-        if (query.length < 3) {
-            movieSuggestionsBox.innerHTML = '';
-            return;
-        }
-        try {
-            const response = await fetch(`http://127.0.0.1:8000/search/movie/${query}`);
-            const data = await response.json();
-            movieSuggestionsBox.innerHTML = '';
-            if (data.results) {
-                data.results.forEach(title => {
-                    const item = document.createElement('div');
-                    item.className = 'suggestion-item';
-                    item.textContent = title;
-                    item.addEventListener('click', () => {
-                        movieInput.value = title;
-                        movieSuggestionsBox.innerHTML = '';
-                        fetchAndDisplayMovieRecs(title); // This now calls our reusable function
-                    });
-                    movieSuggestionsBox.appendChild(item);
-                });
-            }
-        } catch (error) { console.error("Error fetching movie suggestions:", error); }
-    };
-    movieInput.addEventListener('input', debounce(handleMovieInput));
-
+    // --- MOVIE RECOMMENDATION BUTTON ---
     movieRecommendBtn.addEventListener('click', () => {
-        fetchAndDisplayMovieRecs(movieInput.value); // This also calls our reusable function
+        fetchAndDisplayMovieRecs(movieInput.value);
+    });
+
+    // --- NEW: BOOK RECOMMENDATION BUTTON (LIVE) ---
+    bookRecommendBtn.addEventListener('click', async () => {
+        const bookTitle = bookInput.value;
+        if (!bookTitle) return alert("Please enter a book title.");
+        
+        const timer = startLoading();
+        let finalSeconds = 0;
+        try {
+            // REMEMBER: Turn VPN OFF for this call
+            const response = await fetch(`http://127.0.0.1:8000/recommend/book/${bookTitle}`);
+            if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+            const data = await response.json();
+
+            if (data.error) {
+                resultsGrid.innerHTML = `<p class="error-message">${data.error}</p>`;
+            } else {
+                // --- SHOW EXPLANATION FOR BOOKS ---
+                if (data.explanation) {
+                    explanationContainer.innerHTML = `<p>${data.explanation}</p>`;
+                    explanationContainer.style.display = 'block';
+                }
+                displayResults(data.recommendations);
+            }
+        } catch (error) {
+            console.error("Error fetching book recommendations:", error);
+            resultsGrid.innerHTML = `<p class="error-message">Could not connect to the API server.</p>`;
+        } finally {
+            finalSeconds = parseInt(timerSpan.textContent) || 0;
+            stopLoading(timer);
+            statusMessage.textContent = `Book recommendations loaded in ${finalSeconds} seconds.`;
+        }
     });
 
     // --- DUMMY DATA ---
     const dummyBookRecommendations = [{ title: "The Hunger Games", authors: "Suzanne Collins", coverUrl: "https://via.placeholder.com/500x750.png?text=Hunger+Games" }];
     const dummyMusicRecommendations = [{ track_name: "Bohemian Rhapsody", artist_name: "Queen", coverUrl: "https://via.placeholder.com/500x500.png?text=Queen" }];
 
-    // --- BOOK & MUSIC LOGIC (using dummy data for now) ---
-    bookRecommendBtn.addEventListener('click', () => {
-        if (!bookInput.value) return alert("Please enter a book title.");
-        explanationContainer.style.display = 'none';
-        statusMessage.innerHTML = '✨ Displaying dummy book data.';
-        displayResults(dummyBookRecommendations);
-    });
-
+    // --- MUSIC LOGIC (using dummy data for now) ---
     musicRecommendBtn.addEventListener('click', () => {
         if (!musicInput.value) return alert("Please enter a song title.");
         explanationContainer.style.display = 'none';
-        statusMessage.innerHTML = '✨ Displaying dummy music data.';
+        statusMessage.innerHTML = 'Displaying dummy music data.';
         displayResults(dummyMusicRecommendations);
     });
 
@@ -265,7 +263,4 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!bookInput.parentElement.contains(e.target)) bookSuggestionsBox.innerHTML = '';
         if (!musicInput.parentElement.contains(e.target)) musicSuggestionsBox.innerHTML = '';
     });
-    setupAutocomplete(movieInput, movieSuggestionsBox, 'movie');
-    setupAutocomplete(bookInput, bookSuggestionsBox, 'book');
-    setupAutocomplete(musicInput, musicSuggestionsBox, 'music');
 });
