@@ -8,26 +8,6 @@
 </head>
 <body>
     <div class="container">
-        <!-- Background Elements -->
-        <div class="grid-background"></div>
-        <div class="glow-orb"></div>
-        <div class="floating-particles"></div>
-        
-        <!-- 3D Globe Container -->
-        <div class="globe-container">
-            <canvas id="globeCanvas"></canvas>
-            <div class="globe-rays">
-                <div class="ray"></div>
-                <div class="ray"></div>
-                <div class="ray"></div>
-                <div class="ray"></div>
-                <div class="ray"></div>
-                <div class="ray"></div>
-                <div class="ray"></div>
-                <div class="ray"></div>
-            </div>
-        </div>
-
         <!-- Main Content -->
         <div class="content-wrapper">
             <div class="brand">
@@ -58,6 +38,9 @@
                     </button>
                 </div>
 
+                <!-- Banner for inline success/error messages without page refresh -->
+                <div id="authBanner" class="auth-banner" aria-live="polite" style="display:none;"></div>
+
                 <!-- Sign In Form -->
                 <form id="signinForm" class="auth-form active">
                     <div class="form-group">
@@ -84,7 +67,7 @@
                             <span class="checkmark"></span>
                             <span class="checkbox-label">Remember me</span>
                         </label>
-                        <a href="#" class="forgot-link">Forgot password?</a>
+                        <a href="forgot-password.html" class="forgot-link">Forgot password?</a>
                     </div>
 
                     <button type="submit" class="submit-btn">
@@ -212,6 +195,10 @@
     <!-- CodeRabbit Integration (Hidden) -->
     <div style="display: none;" data-coderabbit="active"></div>
     
+    <script>
+      window.AUTH_API_BASE = window.AUTH_API_BASE || "http://localhost:8081";
+      window.MAIN_PAGE = window.MAIN_PAGE || "index.html";
+    </script>
     <script src="js/auth.js"></script>
 </body>
 </html>

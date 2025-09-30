@@ -9,16 +9,16 @@ from tqdm import tqdm
 load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-INPUT_FILE = 'data/spotify_tracks.csv'
+# --- THIS IS THE FIX ---
+INPUT_FILE = 'data/SpotifyFeatures.csv'
 OUTPUT_FILE = 'data/music_embeddings.parquet'
 CHECKPOINT_INTERVAL = 100  # Save progress every 100 songs
 
 # --- FUNCTIONS ---
-def get_music_embedding(track: str, artist: str, album: str, genre: str):
+def get_music_embedding(track: str, artist: str, genre: str):
     """Generates an embedding for a song."""
     embedding_model = 'text-embedding-004'
-    # Create a rich prompt for music
-    prompt = f"Track: {track}\nArtist(s): {artist}\nAlbum: {album}\nGenre: {genre}"
+    prompt = f"Track Name: {track}\nArtist(s): {artist}\nGenre: {genre}"
     try:
         embedding = genai.embed_content(model=embedding_model, content=prompt)
         return embedding['embedding']
@@ -32,10 +32,12 @@ def main():
     print(f"Loading music data from '{INPUT_FILE}'...")
     music_df = pd.read_csv(INPUT_FILE, on_bad_lines='skip')
 
-    # --- Data Cleaning ---
-    essential_cols = ['track_id', 'track_name', 'artists', 'album_name', 'track_genre']
+    # --- Data Cleaning using your column names ---
+    essential_cols = ['track_id', 'track_name', 'artist_name', 'genre']
+    original_rows = len(music_df)
     music_df.dropna(subset=essential_cols, inplace=True)
-    print("Data cleaning complete.")
+    cleaned_rows = len(music_df)
+    print(f"Data cleaning complete. Removed {original_rows - cleaned_rows} rows with missing data.")
     
     processed_track_ids = set()
     embeddings_df = pd.DataFrame()
@@ -59,16 +61,16 @@ def main():
     for i, (index, row) in enumerate(tqdm(unprocessed_music_df.iterrows(), total=unprocessed_music_df.shape[0], desc="Processing Music")):
         embedding = get_music_embedding(
             track=str(row['track_name']),
-            artist=str(row['artists']),
-            album=str(row['album_name']),
-            genre=str(row['track_genre'])
+            artist=str(row['artist_name']),
+            genre=str(row['genre'])
         )
         
         if embedding:
             new_embeddings_list.append({
                 'track_id': row['track_id'],
                 'track_name': row['track_name'],
-                'artists': row['artists'],
+                'artist_name': row['artist_name'],
+                'genre': row['genre'],
                 'embedding': embedding
             })
         
