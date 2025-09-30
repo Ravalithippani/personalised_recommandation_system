@@ -9,6 +9,11 @@ const recommendBtn = document.getElementById("recommendBtn")
 // API base with safe default and optional override via window.API_BASE
 const API_BASE = window.API_BASE || "http://localhost:8000"
 
+// Function to show input error
+function showInputError() {
+  alert("Please enter a valid query.")
+}
+
 // Loading Screen Animation
 window.addEventListener("load", () => {
   setTimeout(() => {
@@ -254,6 +259,8 @@ document.head.appendChild(style)
 
 // Search functionality
 let suggestionsEl
+let selectedSuggestionIndex = -1
+
 function ensureSuggestionsEl() {
   if (suggestionsEl) return
   suggestionsEl = document.createElement("div")
@@ -266,7 +273,7 @@ function ensureSuggestionsEl() {
     top: "100%",
     left: "0",
     right: "0",
-    zIndex: "50",
+    zIndex: "9999",
     background: "rgba(15,23,42,0.95)",
     border: "1px solid rgba(78,205,196,0.2)",
     borderRadius: "8px",
@@ -305,6 +312,8 @@ async function showSearchSuggestions(query) {
       return
     }
 
+    selectedSuggestionIndex = -1
+
     suggestionsEl.innerHTML = items
       .map(
         (txt) =>
@@ -313,12 +322,17 @@ async function showSearchSuggestions(query) {
       .join("")
 
     suggestionsEl.style.display = "block"
-    suggestionsEl.querySelectorAll(".suggestion-item").forEach((btn) => {
+
+    suggestionsEl.querySelectorAll(".suggestion-item").forEach((btn, index) => {
       btn.onclick = () => {
         searchInput.value = btn.textContent
         hideSearchSuggestions()
+        // Trigger recommendation immediately
+        recommendBtn.click()
       }
       btn.onmouseenter = () => {
+        // Clear keyboard selection when hovering
+        clearSuggestionHighlight()
         btn.style.background = "rgba(78,205,196,0.12)"
       }
       btn.onmouseleave = () => {
@@ -331,8 +345,28 @@ async function showSearchSuggestions(query) {
   }
 }
 
+function clearSuggestionHighlight() {
+  if (!suggestionsEl) return
+  suggestionsEl.querySelectorAll(".suggestion-item").forEach((btn) => {
+    btn.style.background = "transparent"
+  })
+}
+
+function highlightSuggestion(index) {
+  if (!suggestionsEl) return
+  const items = suggestionsEl.querySelectorAll(".suggestion-item")
+  if (index < 0 || index >= items.length) return
+
+  clearSuggestionHighlight()
+  items[index].style.background = "rgba(78,205,196,0.2)"
+  items[index].scrollIntoView({ block: "nearest", behavior: "smooth" })
+}
+
 function hideSearchSuggestions() {
-  if (suggestionsEl) suggestionsEl.style.display = "none"
+  if (suggestionsEl) {
+    suggestionsEl.style.display = "none"
+    selectedSuggestionIndex = -1
+  }
 }
 
 // Close suggestions when clicking outside
@@ -349,6 +383,34 @@ searchInput.addEventListener("input", (e) => {
     // Add search suggestions or live filtering here
     showSearchSuggestions(query)
   } else {
+    hideSearchSuggestions()
+  }
+})
+
+searchInput.addEventListener("keydown", (e) => {
+  if (!suggestionsEl || suggestionsEl.style.display === "none") return
+
+  const items = suggestionsEl.querySelectorAll(".suggestion-item")
+  if (!items.length) return
+
+  if (e.key === "ArrowDown") {
+    e.preventDefault()
+    selectedSuggestionIndex = Math.min(selectedSuggestionIndex + 1, items.length - 1)
+    highlightSuggestion(selectedSuggestionIndex)
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault()
+    selectedSuggestionIndex = Math.max(selectedSuggestionIndex - 1, 0)
+    highlightSuggestion(selectedSuggestionIndex)
+  } else if (e.key === "Enter") {
+    e.preventDefault()
+    if (selectedSuggestionIndex >= 0 && selectedSuggestionIndex < items.length) {
+      // Select the highlighted suggestion
+      items[selectedSuggestionIndex].click()
+    } else {
+      // No selection, just trigger recommendation with current input
+      recommendBtn.click()
+    }
+  } else if (e.key === "Escape") {
     hideSearchSuggestions()
   }
 })
@@ -370,7 +432,6 @@ recommendBtn.addEventListener("click", async () => {
   await fetchAndRenderRecommendations(query, category)
 })
 
-// Fetch recommendations from FastAPI and render into the active grid
 async function fetchAndRenderRecommendations(query, category) {
   const activeSection = document.querySelector(".content-section.active")
   const grid = activeSection?.querySelector(".content-grid")
@@ -383,30 +444,61 @@ async function fetchAndRenderRecommendations(query, category) {
     endpoint = `${API_BASE}/recommend/book/${encodeURIComponent(query)}`
   } else {
     // Music not yet supported by backend; show gentle error animation
-    showInputError()
+    showNotFoundError("Music recommendations coming soon!")
     return
   }
 
+  // Show loading state
+  grid.innerHTML = `
+    <div class="col-12 text-center" style="padding: 60px 20px;">
+      <div style="display: inline-block; animation: spin 1s linear infinite;">
+        <i class="fas fa-spinner" style="font-size: 3rem; color: rgba(78,205,196,0.8);"></i>
+      </div>
+      <p style="margin-top: 20px; color: rgba(226,232,240,0.7); font-size: 1.1rem;">
+        Loading recommendations...
+      </p>
+    </div>
+  `
+
   try {
     const res = await fetch(endpoint, { credentials: "omit" })
+
+    if (!res.ok) {
+      if (res.status === 404) {
+        showNotFoundError(`"${query}" not found. Try another ${category === "movies" ? "movie" : "book"}.`)
+        grid.innerHTML = ""
+        return
+      }
+      throw new Error(`HTTP ${res.status}`)
+    }
+
     const data = await res.json()
+
     if (data.error) {
       console.warn("[ORO] API returned error:", data.error)
-      showInputError()
+      showNotFoundError(data.error)
+      grid.innerHTML = ""
       return
     }
+
     const recs = data.recommendations || []
 
-    // Clear existing results then render fresh ones
+    if (recs.length === 0) {
+      showNotFoundError(`No recommendations found for "${query}".`)
+      grid.innerHTML = ""
+      return
+    }
+
+    // Clear loading state and render fresh results
     grid.innerHTML = ""
-    recs.forEach((rec) => {
+    recs.forEach((rec, index) => {
       const card = createAPICard(rec, category)
       grid.appendChild(card)
-      // Animate in
-      requestAnimationFrame(() => {
+      // Staggered animation
+      setTimeout(() => {
         card.style.opacity = "1"
         card.style.transform = "translateY(0)"
-      })
+      }, index * 100)
     })
 
     // Optionally use explanation from API (kept to console to preserve exact UI)
@@ -415,8 +507,29 @@ async function fetchAndRenderRecommendations(query, category) {
     }
   } catch (e) {
     console.error("[ORO] recommendation error:", e)
-    showInputError()
+    showNotFoundError("Failed to load recommendations. Please try again.")
+    grid.innerHTML = ""
   }
+}
+
+function showNotFoundError(message) {
+  const activeSection = document.querySelector(".content-section.active")
+  const grid = activeSection?.querySelector(".content-grid")
+  if (!grid) return
+
+  grid.innerHTML = `
+    <div class="col-12 text-center" style="padding: 60px 20px;">
+      <div style="font-size: 4rem; margin-bottom: 20px;">
+        <i class="fas fa-exclamation-circle" style="color: rgba(255,107,107,0.6);"></i>
+      </div>
+      <p style="color: rgba(226,232,240,0.9); font-size: 1.2rem; margin-bottom: 10px;">
+        ${message}
+      </p>
+      <p style="color: rgba(226,232,240,0.5); font-size: 0.95rem;">
+        Try searching for something else
+      </p>
+    </div>
+  `
 }
 
 // Card builder using API payload (posterUrl/coverUrl + title)
@@ -465,26 +578,15 @@ function triggerRecommendationAnimation() {
     recommendBtn.style.filter = ""
   }, 200)
 
-  // Add loading state to button
-  const originalText = recommendBtn.innerHTML
+  const originalHTML = recommendBtn.innerHTML
   recommendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> <span>Analyzing...</span>'
+  recommendBtn.disabled = true
 
+  // Reset after 10 seconds as fallback
   setTimeout(() => {
-    recommendBtn.innerHTML = originalText
-  }, 2000)
-}
-
-// Show input error
-function showInputError() {
-  searchInput.style.borderColor = "#ff6b6b"
-  searchInput.style.boxShadow = "0 0 20px rgba(255, 107, 107, 0.3)"
-  searchInput.placeholder = "Please enter a search term..."
-
-  setTimeout(() => {
-    searchInput.style.borderColor = ""
-    searchInput.style.boxShadow = ""
-    updateSearchPlaceholder(document.querySelector(".category-tab.active").dataset.category)
-  }, 2000)
+    recommendBtn.innerHTML = originalHTML
+    recommendBtn.disabled = false
+  }, 10000)
 }
 
 // Card hover effects
@@ -542,6 +644,16 @@ const sparkleCSS = `
 
 style.textContent += sparkleCSS
 
+// Add spin animation for loading spinner
+const spinCSS = `
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+`
+
+style.textContent += spinCSS
+
 // Lightweight styles for suggestions dropdown
 style.textContent += `
 .search-suggestions { box-shadow: 0 10px 30px rgba(0,0,0,0.35); }
@@ -550,33 +662,250 @@ style.textContent += `
 
 // Initialize the app
 document.addEventListener("DOMContentLoaded", () => {
-  // Set initial category
-  updateSearchPlaceholder("movies")
+    // --- Get all UI elements ---
+    const searchInput = document.getElementById("searchInput");
+    const recommendBtn = document.getElementById("recommendBtn");
+    const categoryTabs = document.querySelectorAll(".category-tab");
+    const suggestionsBox = document.createElement('div');
+    suggestionsBox.className = 'suggestions-box';
+    searchInput.parentElement.appendChild(suggestionsBox); // Append suggestions box
 
-  // Start background animations
-  setTimeout(() => {
-    triggerCategoryAnimations("movies")
-  }, 3500)
+    let activeCategory = 'movies';
 
-  console.log("ORO Recommendation Engine Initialized")
-})
+    // --- Tab Switching ---
+    categoryTabs.forEach(tab => {
+        tab.addEventListener("click", () => {
+            activeCategory = tab.dataset.category;
+            categoryTabs.forEach(t => t.classList.remove("active"));
+            tab.classList.add("active");
+            // Update resultsGrid to the new active section
+            const newGrid = document.querySelector(`#${activeCategory}Section .content-grid`);
+            if (newGrid) newGrid.innerHTML = '';
+            searchInput.value = '';
+            suggestionsBox.innerHTML = '';
+        });
+    });
 
-// Keyboard shortcuts
-document.addEventListener("keydown", (e) => {
-  // Enter key to trigger recommendation
-  if (e.key === "Enter" && document.activeElement === searchInput) {
-    recommendBtn.click()
-  }
-
-  // Tab switching with number keys
-  if (e.key >= "1" && e.key <= "3") {
-    const tabIndex = Number.parseInt(e.key) - 1
-    const tabs = Array.from(categoryTabs)
-    if (tabs[tabIndex]) {
-      tabs[tabIndex].click()
+    // --- Helper Functions ---
+    function debounce(func, delay = 350) {
+        let timeoutId;
+        return (...args) => {
+            clearTimeout(timeoutId);
+            timeoutId = setTimeout(() => func.apply(this, args), delay);
+        };
     }
-  }
-})
+
+    // --- Autocomplete Logic ---
+    const handleSearchInput = async () => {
+        const query = searchInput.value;
+        if (query.length < 3) {
+            suggestionsBox.innerHTML = '';
+            suggestionsBox.style.display = 'none';
+            return;
+        }
+        try {
+            // --- THIS IS THE FIX ---
+            const apiType = activeCategory === 'movies' ? 'movie' : 'book';
+            const response = await fetch(`http://127.0.0.1:8001/search/${apiType}/${query}`);
+            const data = await response.json();
+            suggestionsBox.innerHTML = '';
+            if (data.results && data.results.length > 0) {
+                data.results.forEach(title => {
+                    const item = document.createElement('div');
+                    item.className = 'suggestion-item';
+                    item.textContent = title;
+                    item.addEventListener('click', () => {
+                        searchInput.value = title;
+                        suggestionsBox.innerHTML = '';
+                        suggestionsBox.style.display = 'none';
+                        recommendBtn.click();
+                    });
+                    suggestionsBox.appendChild(item);
+                });
+                suggestionsBox.style.display = 'block';
+            } else {
+                suggestionsBox.style.display = 'none';
+            }
+        } catch (error) {
+            console.error("Error fetching suggestions:", error);
+            suggestionsBox.style.display = 'none';
+        }
+    };
+    searchInput.addEventListener('input', debounce(handleSearchInput));
+
+    // Hide suggestions when clicking outside
+    document.addEventListener('click', (e) => {
+        if (!suggestionsBox.contains(e.target) && e.target !== searchInput) {
+            suggestionsBox.innerHTML = '';
+            suggestionsBox.style.display = 'none';
+        }
+    });
+
+    // --- Recommendation Button Logic ---
+    recommendBtn.addEventListener("click", async () => {
+        const query = searchInput.value.trim();
+        if (!query) return;
+
+        const originalBtnHTML = recommendBtn.innerHTML;
+        recommendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> <span>Analyzing...</span>';
+        recommendBtn.disabled = true;
+
+        try {
+            // --- THIS IS THE FIX ---
+            const apiType = activeCategory === 'movies' ? 'movie' : 'book';
+            const endpoint = `http://127.0.0.1:8001/recommend/${apiType}/${query}`;
+            const response = await fetch(endpoint);
+            const data = await response.json();
+
+            // Find the correct grid for the active section
+            const grid = document.querySelector(`#${activeCategory}Section .content-grid`);
+            if (grid) {
+                grid.innerHTML = '';
+                if (data.recommendations && data.recommendations.length > 0) {
+                    data.recommendations.forEach(rec => {
+                        const card = document.createElement('div');
+                        card.className = "col-lg-4 col-md-6";
+                        card.innerHTML = `
+                            <div class="recommendation-card">
+                                <div class="card-content">
+                                    <div class="${apiType === 'movie' ? 'movie-poster' : 'book-cover'}"
+                                        style="background-image:url('${apiType === 'movie' ? rec.posterUrl : rec.coverUrl || ''}');background-size:cover;background-position:center;">
+                                    </div>
+                                    <h3>${rec.title || ''}</h3>
+                                    <p>${apiType === 'movie' ? (rec.genres || '') : (rec.authors || '')}</p>
+                                </div>
+                            </div>
+                        `;
+                        grid.appendChild(card);
+                    });
+                } else {
+                    grid.innerHTML = `<div class="col-12"><p class="error-message">No recommendations found.</p></div>`;
+                }
+            }
+        } catch (error) {
+            console.error("Error fetching recommendations:", error);
+        } finally {
+            recommendBtn.innerHTML = originalBtnHTML;
+            recommendBtn.disabled = false;
+        }
+    });
+    function displayResults(items, type) {
+        resultsGrid.innerHTML = '';
+        if (!Array.isArray(items) || items.length === 0) {
+            resultsGrid.innerHTML = `<p class="text-muted text-center">No results found.</p>`;
+            return;
+        }
+
+        items.forEach(item => {
+            const col = document.createElement('div');
+            col.className = 'col-lg-4 col-md-6 mb-4';
+
+            const posterSrc = item.posterUrl || item.coverUrl || 'https://via.placeholder.com/500x750.png?text=No+Image';
+            const itemTitle = item.title || item.track_name;
+            const itemSubtitle = item.genres || item.authors || item.artist_name || '';
+
+            // Create the card element
+            const card = document.createElement('div');
+            card.className = 'recommendation-card';
+            card.innerHTML = `
+                <div class="card-glow"></div>
+                <div class="movie-poster" style="background-image: url('${posterSrc}'); background-size: cover; background-position: center;">
+                    <i class="fas fa-play play-overlay"></i>
+                </div>
+                <div class="card-content">
+                    <h3>${itemTitle}</h3>
+                    <p>${itemSubtitle}</p>
+                </div>
+            `;
+
+            // --- NEW: FAVORITE BUTTON ---
+            const favoriteBtn = document.createElement('button');
+            favoriteBtn.className = 'favorite-btn';
+            favoriteBtn.innerHTML = '<i class="fas fa-heart"></i>'; // Font Awesome heart icon
+
+            // Add the click logic for the button
+            favoriteBtn.addEventListener('click', (e) => {
+                e.stopPropagation(); // Prevents other clicks from firing
+                favoriteBtn.classList.toggle('favorited');
+                console.log(`Toggled favorite for: ${itemTitle}`);
+                // Later, we will add an API call here to save this to the database
+            });
+
+            // Add the button to the card
+            card.appendChild(favoriteBtn);
+            col.appendChild(card);
+            resultsGrid.appendChild(col);
+        });
+
+        // Re-initialize Feather Icons to render the new heart icons
+        feather.replace();
+
+        // --- NEW: Add event listeners to the new favorite buttons ---
+        document.querySelectorAll('.favorite-btn').forEach(button => {
+            button.addEventListener('click', (e) => {
+                e.stopPropagation(); // Prevents other clicks from firing
+                button.classList.toggle('favorited');
+                const title = button.dataset.title;
+                console.log(`Toggled favorite for: ${title}`);
+                // Later, we will add an API call here to save this to the database
+            });
+        });
+    }
+
+});
+
+// --- THIS IS THE CORRECTED FUNCTION ---
+function showRecommendationResults(query, category) {
+    const activeSection = document.querySelector(".content-section.active");
+    const grid = activeSection.querySelector(".content-grid");
+
+    // Clear previous results
+    grid.innerHTML = "";
+
+    // Simulate API call and display results
+    setTimeout(() => {
+        // This is where you would normally get data from your API
+        const dummyData = [
+            { title: "Recommendation 1", genres: "Genre A" },
+            { title: "Recommendation 2", genres: "Genre B" },
+            { title: "Recommendation 3", genres: "Genre C" },
+            { title: "Recommendation 4", genres: "Genre D" },
+            { title: "Recommendation 5", genres: "Genre E" },
+        ];
+
+        if (dummyData.length === 0) {
+            grid.innerHTML = `<p class="text-muted text-center">No recommendations found.</p>`;
+            return;
+        }
+
+        dummyData.forEach(rec => {
+            const cardCol = createRecommendationCard(rec, category);
+
+            // --- FAVORITE BUTTON LOGIC ---
+            const favoriteBtn = document.createElement('button');
+            favoriteBtn.className = 'favorite-btn';
+            favoriteBtn.innerHTML = '<i class="fas fa-heart"></i>'; // Font Awesome Icon
+
+            favoriteBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                favoriteBtn.classList.toggle('favorited');
+                console.log(`Toggled favorite for: ${rec.title}`);
+                // Later, we will add an API call here to save this
+            });
+
+            // Append the button to the card inside the column
+            cardCol.querySelector('.recommendation-card').appendChild(favoriteBtn);
+
+            grid.appendChild(cardCol);
+
+            // Animate the new card
+            setTimeout(() => {
+                cardCol.style.opacity = "1";
+                cardCol.style.transform = "translateY(0)";
+            }, 100);
+        });
+    }, 1000); // Simulate 1s loading time
+}
 
 // Performance optimization
 let animationFrameId

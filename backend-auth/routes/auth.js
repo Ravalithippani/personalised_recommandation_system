@@ -6,6 +6,7 @@ const User = require("../models/User")
 const { body, validationResult } = require("express-validator")
 const crypto = require("crypto")
 const sendMail = require("../utils/email")
+const nodemailer = require('nodemailer'); 
 
 // Helper to extract bearer token
 function getBearerToken(req) {
@@ -124,55 +125,63 @@ router.post(
 )
 
 // --- FORGOT PASSWORD ROUTE ---
-router.post("/forgot-password", async (req, res) => {
-  const { email } = req.body || {}
-  try {
-    const emailNorm = String(email || "").toLowerCase()
-    const user = await User.findOne({ email: emailNorm })
-    if (!user) {
-      // Avoid user enumeration
-      return res.status(200).json({ msg: "If a user with that email exists, a reset link has been sent." })
-    }
+router.post('/forgot-password', async (req, res) => {
+    const { email } = req.body;
+    let user; // <-- FIX: Define user here to make it accessible in catch block
 
-    // Generate and store hashed token with expiry (10 minutes)
-    const resetToken = crypto.randomBytes(20).toString("hex")
-    user.passwordResetToken = crypto.createHash("sha256").update(resetToken).digest("hex")
-    user.passwordResetExpires = Date.now() + 10 * 60 * 1000
-    await user.save()
-
-    const frontendOrigin = process.env.FRONTEND_ORIGIN || "http://localhost:5500"
-    const resetUrl = `${frontendOrigin.replace(/\/$/, "")}/reset-password.html?token=${resetToken}`
-
-    // Send email via SMTP (falls back to console if delivery fails)
     try {
-      await sendMail({
-        to: user.email,
-        subject: "Reset your Globe password",
-        text: `We received a request to reset your password.\n\nUse the link below within 10 minutes:\n${resetUrl}\n\nIf you didn't request this, please ignore this email.`,
-        html: `
-          <div style="font-family:Inter,system-ui,Arial,sans-serif;max-width:560px;margin:auto;padding:16px;border:1px solid #eee;border-radius:12px">
-            <h2 style="margin:0 0 8px;color:#0a0a0a">Reset your password</h2>
-            <p style="color:#333;line-height:1.6">We received a request to reset your password. Click the button below within 10 minutes.</p>
-            <p style="margin:16px 0">
-              <a href="${resetUrl}" style="display:inline-block;background:#4ecdc4;color:#fff;padding:12px 16px;border-radius:10px;text-decoration:none">Reset Password</a>
-            </p>
-            <p style="color:#555;line-height:1.6">If the button doesn't work, copy and paste this link:<br/><a href="${resetUrl}">${resetUrl}</a></p>
-            <p style="color:#888;font-size:12px">If you didn't request this, you can safely ignore this email.</p>
-          </div>
-        `,
-      })
-    } catch (mailErr) {
-      console.error("Email send failed, showing link in logs as fallback:", mailErr.message)
-      console.log("Password reset link (fallback):", resetUrl)
-      // Do not change response to avoid enumeration or leaking errors
-    }
+        user = await User.findOne({ email });
+        if (!user) {
+            return res.status(200).json({ msg: 'If an account with that email exists, a reset link has been sent.' });
+        }
 
-    return res.status(200).json({ msg: "If a user with that email exists, a reset link has been sent." })
-  } catch (err) {
-    console.error(err.message)
-    return res.status(500).json({ msg: "Server Error" })
-  }
-})
+        // Generate Token
+        const resetToken = crypto.randomBytes(20).toString('hex');
+        user.passwordResetToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+        user.passwordResetExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+        await user.save({ validateBeforeSave: false });
+
+        // --- EMAIL SENDING LOGIC ---
+        const resetUrl = `${process.env.FRONTEND_ORIGIN}/reset-password.html?token=${resetToken}`;
+
+        const message = `
+            <h1>Password Reset Request</h1>
+            <p>You requested a password reset. Please click the button below to set a new password. This link is valid for 10 minutes.</p>
+            <a href="${resetUrl}" style="background-color: #3a86ff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Reset Password</a>
+            <p>If the button doesn't work, copy and paste this link into your browser:</p>
+            <p>${resetUrl}</p>
+        `;
+
+        let transporter = nodemailer.createTransport({
+            host: process.env.SMTP_HOST,
+            port: parseInt(process.env.SMTP_PORT, 10),
+            secure: process.env.SMTP_SECURE === 'true',
+            auth: {
+                user: process.env.SMTP_USER,
+                pass: process.env.SMTP_PASS,
+            },
+        });
+
+        await transporter.sendMail({
+            from: `"AI Recommender" <${process.env.EMAIL_FROM}>`,
+            to: user.email,
+            subject: 'Your Password Reset Link',
+            html: message,
+        });
+        
+        res.status(200).json({ msg: 'A password reset link has been sent to your email.' });
+
+    } catch (err) {
+        console.error("Error in /forgot-password:", err.message);
+        // This 'if (user)' check will now work correctly
+        if (user) {
+            user.passwordResetToken = undefined;
+            user.passwordResetExpires = undefined;
+            await user.save({ validateBeforeSave: false });
+        }
+        res.status(500).send('Error sending email. Please try again later.');
+    }
+});
 
 // --- RESET PASSWORD ROUTE ---
 router.post("/reset-password/:token", async (req, res) => {

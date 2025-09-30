@@ -114,8 +114,9 @@ document.addEventListener("DOMContentLoaded", () => {
         return
       }
       try {
-        // Use the live API for both movies and books
-        const response = await fetch(`http://127.0.0.1:8000/search/${type}/${query}`)
+        // --- THIS IS THE FIX ---
+        // Use port 8001 for all fetch calls
+        const response = await fetch(`http://127.0.0.1:8001/search/${type}/${query}`)
         const data = await response.json()
         const suggestions = data.results || []
         suggestionsBoxEl.innerHTML = ""
@@ -184,7 +185,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const timer = startLoading()
     let finalSeconds = 0
     try {
-      const response = await fetch(`http://127.0.0.1:8000/recommend/movie/${movieTitle}`)
+      // --- THIS IS THE FIX ---
+      const response = await fetch(`http://127.0.0.1:8001/recommend/movie/${movieTitle}`)
       if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`)
       const data = await response.json()
       if (data.error) {
@@ -221,8 +223,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const timer = startLoading()
     let finalSeconds = 0
     try {
-      // REMEMBER: Turn VPN OFF for this call
-      const response = await fetch(`http://127.0.0.1:8000/recommend/book/${bookTitle}`)
+      // --- THIS IS THE FIX ---
+      const response = await fetch(`http://127.0.0.1:8001/recommend/book/${bookTitle}`)
       if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`)
       const data = await response.json()
 
@@ -231,43 +233,147 @@ document.addEventListener("DOMContentLoaded", () => {
       } else {
         // --- SHOW EXPLANATION FOR BOOKS ---
         if (data.explanation) {
-          explanationContainer.innerHTML = `<p>${data.explanation}</p>`
+          explanationContainer.innerHTML = `<div class="alert alert-info">${data.explanation}</div>`
           explanationContainer.style.display = "block"
         }
         displayResults(data.recommendations)
       }
     } catch (error) {
       console.error("Error fetching book recommendations:", error)
-      resultsGrid.innerHTML = `<p class="error-message">Could not connect to the API server.</p>`
+      resultsGrid.innerHTML = `<p class="error-message">Could not connect to API server.</p>`
     } finally {
-      finalSeconds = Number.parseInt(timerSpan.textContent) || 0
+      finalSeconds = parseInt(timerSpan.textContent) || 0
       stopLoading(timer)
-      statusMessage.textContent = `Book recommendations loaded in ${finalSeconds} seconds.`
+      statusMessage.textContent = `✨ Book recommendations loaded in ${finalSeconds} seconds.`
     }
   })
 
   // --- DUMMY DATA ---
-  const dummyBookRecommendations = [
-    {
-      title: "The Hunger Games",
-      authors: "Suzanne Collins",
-      coverUrl: "https://via.placeholder.com/500x750.png?text=Hunger+Games",
-    },
-  ]
-  const dummyMusicRecommendations = [
-    {
-      track_name: "Bohemian Rhapsody",
-      artist_name: "Queen",
-      coverUrl: "https://via.placeholder.com/500x500.png?text=Queen",
-    },
-  ]
-
+  // (Already declared above, so this block is removed to avoid duplication)
   // --- MUSIC LOGIC (using dummy data for now) ---
-  musicRecommendBtn.addEventListener("click", () => {
-    if (!musicInput.value) return alert("Please enter a song title.")
-    explanationContainer.style.display = "none"
-    statusMessage.innerHTML = "Displaying dummy music data."
-    displayResults(dummyMusicRecommendations)
+  // (Already declared above, so this block is removed to avoid duplication)
+
+  // --- MOVIE LOGIC (LIVE API) ---
+  const handleMovieInput = async (event) => {
+    const query = event.target.value
+    if (query.length < 3) {
+      movieSuggestionsBox.innerHTML = ""
+      return
+    }
+    try {
+      const response = await fetch(`http://127.0.0.1:8001/search/movie/${query}`)
+      const data = await response.json()
+      movieSuggestionsBox.innerHTML = ""
+      if (data.results) {
+        data.results.forEach((title) => {
+          const item = document.createElement("div")
+          item.className = "suggestion-item"
+          item.textContent = title
+          item.addEventListener("click", () => {
+            movieInput.value = title
+            movieSuggestionsBox.innerHTML = ""
+            movieRecommendBtn.click() // Automatically trigger recommendation
+          })
+          movieSuggestionsBox.appendChild(item)
+        })
+      }
+    } catch (error) {
+      console.error("Error fetching movie suggestions:", error)
+    }
+  }
+  movieInput.addEventListener("input", debounce(handleMovieInput))
+
+  movieRecommendBtn.addEventListener("click", async () => {
+    const movieTitle = movieInput.value
+    if (!movieTitle) return alert("Please enter a movie title.")
+
+    const timer = startLoading()
+    let finalSeconds = 0
+    try {
+      const response = await fetch(`http://127.0.0.1:8001/recommend/movie/${movieTitle}`)
+      if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`)
+      const data = await response.json()
+
+      if (data.error) {
+        resultsGrid.innerHTML = `<div class="col-12"><p class="error-message">${data.error}</p></div>`
+      } else {
+        if (data.explanation) {
+          explanationContainer.innerHTML = `<p>${data.explanation}</p>`
+          explanationContainer.style.display = "block"
+        }
+        displayResults(data.recommendations)
+      }
+    } catch (error) {
+      console.error("Error fetching recommendations:", error)
+      resultsGrid.innerHTML = `<div class="col-12"><p class="error-message">Could not connect to or process data from the API server.</p></div>`
+    } finally {
+      finalSeconds = Number.parseInt(timerSpan.textContent) || 0
+      stopLoading(timer)
+      if (!resultsGrid.innerHTML.includes("error-message")) {
+        statusMessage.textContent = `Recommendations loaded in ${finalSeconds} seconds.`
+      }
+    }
+  })
+
+  // --- BOOK LOGIC (NOW LIVE!) ---
+  const handleBookInput = async (event) => {
+    const query = event.target.value
+    if (query.length < 3) {
+      bookSuggestionsBox.innerHTML = ""
+      return
+    }
+    try {
+      const response = await fetch(`http://127.0.0.1:8001/search/book/${query}`)
+      const data = await response.json()
+      bookSuggestionsBox.innerHTML = ""
+      if (data.results) {
+        data.results.forEach((title) => {
+          const item = document.createElement("div")
+          item.className = "suggestion-item"
+          item.textContent = title
+          item.addEventListener("click", () => {
+            bookInput.value = title
+            bookSuggestionsBox.innerHTML = ""
+            bookRecommendBtn.click() // Automatically trigger recommendation
+          })
+          bookSuggestionsBox.appendChild(item)
+        })
+      }
+    } catch (error) {
+      console.error("Error fetching book suggestions:", error)
+    }
+  }
+  bookInput.addEventListener("input", debounce(handleBookInput))
+
+  bookRecommendBtn.addEventListener("click", async () => {
+    const bookTitle = bookInput.value
+    if (!bookTitle) return alert("Please enter a book title.")
+
+    const timer = startLoading()
+    let finalSeconds = 0
+    try {
+      const response = await fetch(`http://127.0.0.1:8001/recommend/book/${bookTitle}`)
+      if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`)
+      const data = await response.json()
+
+      if (data.error) {
+        resultsGrid.innerHTML = `<p class="error-message">${data.error}</p>`
+      } else {
+        // Check if there's an explanation and display it
+        if (data.explanation) {
+          explanationContainer.innerHTML = `<div class="alert alert-info">${data.explanation}</div>`
+          explanationContainer.style.display = "block"
+        }
+        displayResults(data.recommendations)
+      }
+    } catch (error) {
+      console.error("Error fetching book recommendations:", error)
+      resultsGrid.innerHTML = `<p class="error-message">Could not connect to API server.</p>`
+    } finally {
+      finalSeconds = parseInt(timerSpan.textContent) || 0
+      stopLoading(timer)
+      statusMessage.textContent = `✨ Book recommendations loaded in ${finalSeconds} seconds.`
+    }
   })
 
   // --- HIDE SUGGESTIONS WHEN CLICKING ELSEWHERE ---

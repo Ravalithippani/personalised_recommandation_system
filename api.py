@@ -26,42 +26,44 @@ _cache = {}
 def process_title_for_search(title: str):
     """Applies all normalization rules to a title string for searching."""
     if not isinstance(title, str): return ""
-    
-    # Step 1: Remove ANY text in parentheses at the end of the string.
-    # This now handles both (1995) and (Series, #Number) formats like in Harry Potter.
     processed_title = re.sub(r'\s*\([^)]*\)\s*$', '', title).strip()
-    
-    # Step 2: Now, handle articles like ", The".
     if processed_title.endswith(', The'): processed_title = 'The ' + processed_title[:-5]
     if processed_title.endswith(', A'): processed_title = 'A ' + processed_title[:-3]
     if processed_title.endswith(', An'): processed_title = 'An ' + processed_title[:-4]
-    
-    # Step 3: Remove leading articles.
     processed_title = re.sub(r'^(the|a|an)\s+', '', processed_title, flags=re.IGNORECASE)
-    
-    # Step 4: Final cleanup.
     return re.sub(r'[^a-zA-Z0-9]', '', processed_title).lower()
 
+
 def load_movie_data():
-    """Loads all movie data files, including custom additions, and merges them."""
+    """Loads all movie data files intelligently to prevent column conflicts."""
     if "movies" in _cache: return _cache["movies"]
+    
+    # Load the main embeddings file, which has our primary title list
     embeddings_df = pd.read_parquet("data/movie_embeddings.parquet")
+    
+    # From the other files, ONLY load the columns we need
     movies_genres_df = pd.read_csv("data/movies.csv")[['movieId', 'genres']]
     links_df = pd.read_csv("data/links.csv")[['movieId', 'tmdbId']]
+    
+    # Merge the dataframes
     merged_df = pd.merge(embeddings_df, movies_genres_df, on='movieId', how='inner')
     final_df = pd.merge(merged_df, links_df, on='movieId', how='inner')
+    
     try:
         custom_embeddings_df = pd.read_parquet("data/custom_embeddings.parquet")
         final_df = pd.concat([final_df, custom_embeddings_df], ignore_index=True)
-        print(f"Successfully loaded and combined {len(custom_embeddings_df)} custom movies.")
+        print(f"Successfully loaded {len(custom_embeddings_df)} custom movies.")
     except FileNotFoundError:
         print("No custom movies file found.")
+        
     final_df.dropna(subset=['tmdbId'], inplace=True)
     final_df['tmdbId'] = final_df['tmdbId'].astype(int)
     final_df['search_title'] = final_df['title'].apply(process_title_for_search)
+    
     _cache["movies"] = final_df
     print("Movie data loaded and cached.")
     return final_df
+
 
 def load_book_data():
     """Loads and prepares the book data."""
@@ -222,22 +224,19 @@ app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True
 # --- API ENDPOINTS ---
 @app.get("/")
 def read_root():
-    return {"message": "Welcome to the Recommender API!"}
+    return {"message": "Welcome!"}
 
-@app.get("/search/movie/{query}")
-def search_movies_api(query: str):
-    """Finds movies by a partial match for autocomplete."""
+@app.get("/search/{item_type}/{query}")
+def search_items(item_type: str, query: str):
     if len(query) < 3: return {"results": []}
+    if item_type == "movie":
+        df = movie_df
+    elif item_type == "book":
+        df = book_df
+    else:
+        return {"results": []}
     search_term = process_title_for_search(query)
-    matches = movie_df[movie_df['search_title'].str.contains(search_term, na=False)].head(10)
-    return {"results": matches['title'].tolist()}
-
-@app.get("/search/book/{query}")
-def search_books_api(query: str):
-    """Finds books by a partial match for autocomplete."""
-    if len(query) < 3: return {"results": []}
-    search_term = process_title_for_search(query)
-    matches = book_df[book_df['search_title'].str.contains(search_term, na=False)].head(10)
+    matches = df[df['search_title'].str.contains(search_term, na=False)].head(7)
     return {"results": matches['title'].tolist()}
 
 @app.get("/recommend/movie/{movie_title}")

@@ -166,15 +166,16 @@ function clearToken() {
 const MAIN_PAGE = window.MAIN_PAGE || "index.html"
 const API_BASE = (window.AUTH_API_BASE || "http://localhost:8081").replace(/\/$/, "")
 
-// --- Centralized DOM hooks and real auth flow ---
 document.addEventListener("DOMContentLoaded", () => {
-  // Determine which page we're on by checking for a specific form
-  const isLoginPage = !!document.getElementById('signinForm');
-  const isForgotPage = !!document.getElementById('forgotPasswordForm');
-  const isResetPage = !!document.getElementById('resetPasswordForm');
-
+  // --- Get all HTML elements ---
+  const tabButtons = document.querySelectorAll('.tab-btn');
+  const authForms = document.querySelectorAll('.auth-form');
+  const signinForm = document.getElementById('signinForm');
+  const signupForm = document.getElementById('signupForm');
+  const successMessage = document.getElementById('successMessage');
   const authBanner = document.getElementById('authBanner');
 
+  // --- Helper function to show messages ---
   function showBanner(message, type = 'error') {
       if (!authBanner) return;
       authBanner.textContent = message;
@@ -182,139 +183,157 @@ document.addEventListener("DOMContentLoaded", () => {
       authBanner.style.display = 'block';
   }
 
-  // --- LOGIC FOR THE MAIN LOGIN/SIGNUP PAGE ---
-  if (isLoginPage) {
-      // Tab switching logic
-      const tabButtons = document.querySelectorAll('.tab-btn');
-      const authForms = document.querySelectorAll('.auth-form');
-      tabButtons.forEach(button => {
-          button.addEventListener('click', () => {
-              tabButtons.forEach(btn => btn.classList.remove('active'));
-              button.classList.add('active');
-              const tab = button.dataset.tab;
-              authForms.forEach(form => {
-                  form.classList.toggle('active', form.id === `${tab}Form`);
-              });
+  // --- Tab Switching Logic ---
+  tabButtons.forEach(button => {
+      button.addEventListener('click', () => {
+          tabButtons.forEach(btn => btn.classList.remove('active'));
+          button.classList.add('active');
+          const tab = button.dataset.tab;
+          authForms.forEach(form => {
+              form.classList.toggle('active', form.id === `${tab}Form`);
           });
       });
+  });
 
-      // Sign In logic
-      const signinForm = document.getElementById('signinForm');
-      signinForm.addEventListener('submit', async (event) => {
-          event.preventDefault();
-          const email = document.getElementById('signinEmail').value;
-          const password = document.getElementById('signinPassword').value;
-          try {
-              const response = await fetch('http://localhost:8081/api/auth/login', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ email, password }),
-              });
-              const data = await response.json();
-              if (!response.ok) {
-                  showBanner(data.msg || 'Login failed.', 'error');
-              } else {
-                  showBanner('Login successful! Redirecting...', 'success');
-                  setTimeout(() => { window.location.href = 'index.html'; }, 1000);
-              }
-          } catch (error) {
-              showBanner('Could not connect to the login server.', 'error');
-          }
-      });
-
-      // Sign Up logic
-      const signupForm = document.getElementById('signupForm');
-      signupForm.addEventListener('submit', async (event) => {
-          event.preventDefault();
-          const name = document.getElementById('signupName').value;
-          const email = document.getElementById('signupEmail').value;
-          const password = document.getElementById('signupPassword').value;
-          try {
-              const response = await fetch('http://localhost:8081/api/auth/register', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ name, email, password }),
-              });
-              const data = await response.json();
-              if (!response.ok) {
-                  showBanner(data.msg || 'Registration failed.', 'error');
-              } else {
-                  showBanner('Registration successful! Redirecting...', 'success');
-                  setTimeout(() => { window.location.href = 'index.html'; }, 1000);
-              }
-          } catch (error) {
-              showBanner('Could not connect to the registration server.', 'error');
-          }
-      });
-
-      // Forgot password link logic
-      const forgotLink = document.querySelector('.forgot-link');
-      if (forgotLink) {
-          forgotLink.addEventListener('click', (e) => {
-              e.preventDefault();
-              window.location.href = 'forgot-password.html';
-          });
+  // Check if user is already signed in
+  ;(async function checkSignedIn() {
+    const token = getToken()
+    if (!token) return
+    try {
+      const resp = await fetch(`${API_BASE}/api/auth/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (resp.ok) {
+        showBanner("You are already signed in.", "info")
+        setTimeout(() => (window.location.href = MAIN_PAGE), 1000)
       }
+    } catch {}
+  })()
+
+  if (signupForm) {
+    signupForm.addEventListener("submit", async (event) => {
+      event.preventDefault()
+      hideBanner()
+
+      const name = document.getElementById("signupName").value.trim()
+      const email = document.getElementById("signupEmail").value.trim()
+      const password = document.getElementById("signupPassword").value
+      const confirmPassword = document.getElementById("confirmPassword")?.value
+
+      if (confirmPassword && password !== confirmPassword) {
+        showBanner("Passwords do not match.", "error")
+        return
+      }
+
+      const submitBtn = signupForm.querySelector(".auth-btn")
+      submitBtn.classList.add("loading")
+      submitBtn.disabled = true
+
+      try {
+        const response = await fetch(`${API_BASE}/api/auth/register`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken() || ""}` },
+          body: JSON.stringify({ name, email, password }),
+        })
+        const data = await response.json()
+
+        if (!response.ok) {
+          if (response.status === 409) {
+            showBanner(data.msg || "Email already registered. Please sign in.", "error")
+          } else if (response.status === 422) {
+            showBanner(data.errors?.[0]?.msg || data.msg || "Please check your inputs.", "error")
+          } else {
+            showBanner(data.msg || "Registration failed. Please try again.", "error")
+          }
+        } else {
+          if (data?.msg === "You are already signed in") {
+            showBanner("You are already signed in.", "info")
+            setTimeout(() => (window.location.href = MAIN_PAGE), 800)
+            return
+          }
+          if (data.token) setToken(data.token)
+          showBanner("Account created successfully! Redirecting...", "success")
+          setTimeout(() => (window.location.href = MAIN_PAGE), 800)
+        }
+      } catch (error) {
+        console.error("Error during registration:", error)
+        showBanner("Could not connect to the registration server.", "error")
+      } finally {
+        submitBtn.classList.remove("loading")
+        submitBtn.disabled = false
+      }
+    })
   }
 
-  // --- LOGIC FOR THE FORGOT PASSWORD PAGE ---
-  if (isForgotPage) {
-      const forgotForm = document.getElementById('forgotPasswordForm');
-      forgotForm.addEventListener('submit', async (event) => {
-          event.preventDefault();
-          const email = document.getElementById('resetEmail').value;
-          try {
-              const response = await fetch('http://localhost:8081/api/auth/forgot-password', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ email }),
-              });
-              const data = await response.json();
-              showBanner(data.msg || 'If your email exists, a reset link has been sent.', 'success');
-          } catch (error) {
-              showBanner('Could not connect to the server.', 'error');
+  if (signinForm) {
+    signinForm.addEventListener("submit", async (event) => {
+      event.preventDefault()
+      hideBanner()
+
+      const email = document.getElementById("signinEmail").value.trim()
+      const password = document.getElementById("signinPassword").value
+
+      const submitBtn = signinForm.querySelector(".auth-btn")
+      submitBtn.classList.add("loading")
+      submitBtn.disabled = true
+
+      try {
+        const response = await fetch(`${API_BASE}/api/auth/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
+        })
+        const data = await response.json()
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            showBanner("Invalid email or password.", "error")
+          } else if (response.status === 422) {
+            showBanner(data.errors?.[0]?.msg || "Please check your inputs.", "error")
+          } else {
+            showBanner(data.msg || "Login failed. Check your credentials.", "error")
+          }
+        } else {
+          if (data.token) setToken(data.token)
+          showBanner("Login successful! Redirecting...", "success")
+          setTimeout(() => (window.location.href = MAIN_PAGE), 600)
+        }
+      } catch (error) {
+        console.error("Error during login:", error)
+        showBanner("Could not connect to the login server. Ensure it is running.", "error")
+      } finally {
+        submitBtn.classList.remove("loading")
+        submitBtn.disabled = false
+      }
+    })
+  }
+
+  // --- NEW: PASSWORD VISIBILITY TOGGLE ---
+  const togglePasswordButtons = document.querySelectorAll('.toggle-password');
+  togglePasswordButtons.forEach(button => {
+      button.addEventListener('click', () => {
+          // Find the password input field right before the button
+          const passwordInput = button.previousElementSibling;
+          if (!passwordInput) return;
+          if (passwordInput.type === 'password') {
+              passwordInput.type = 'text';
+              button.innerHTML = `
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                      <line x1="1" y1="1" x2="23" y2="23"></line>
+                  </svg>
+              `;
+          } else {
+              passwordInput.type = 'password';
+              button.innerHTML = `
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                      <circle cx="12" cy="12" r="3"></circle>
+                  </svg>
+              `;
           }
       });
-  }
-
-  // --- LOGIC FOR THE RESET PASSWORD PAGE ---
-  if (isResetPage) {
-      const resetForm = document.getElementById('resetPasswordForm');
-      resetForm.addEventListener('submit', async (event) => {
-          event.preventDefault();
-          const newPassword = document.getElementById('newPassword').value;
-          const confirmPassword = document.getElementById('confirmNewPassword').value;
-          
-          if (newPassword !== confirmPassword) {
-              return showBanner('Passwords do not match.', 'error');
-          }
-
-          // Get the token from the URL
-          const urlParams = new URLSearchParams(window.location.search);
-          const token = urlParams.get('token');
-
-          if (!token) {
-              return showBanner('Invalid or missing reset token in the URL.', 'error');
-          }
-
-          try {
-              const response = await fetch(`http://localhost:8081/api/auth/reset-password/${token}`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ password: newPassword }),
-              });
-              const data = await response.json();
-              if (!response.ok) {
-                  showBanner(data.msg || 'Password reset failed.', 'error');
-              } else {
-                  showBanner('Password reset successfully! Redirecting to login...', 'success');
-                  setTimeout(() => { window.location.href = 'login.html'; }, 2000);
-              }
-          } catch (error) {
-              showBanner('Could not connect to the server.', 'error');
-          }
-      });
-  }
+  });
 })
 
 // Social Login Handlers
