@@ -168,33 +168,32 @@ const API_BASE = (window.AUTH_API_BASE || "http://localhost:8081").replace(/\/$/
 
 document.addEventListener("DOMContentLoaded", () => {
   // --- Get all HTML elements ---
-  const tabButtons = document.querySelectorAll('.tab-btn');
-  const authForms = document.querySelectorAll('.auth-form');
-  const signinForm = document.getElementById('signinForm');
-  const signupForm = document.getElementById('signupForm');
-  const successMessage = document.getElementById('successMessage');
-  const authBanner = document.getElementById('authBanner');
+  const tabButtons = document.querySelectorAll(".tab-btn")
+  const authForms = document.querySelectorAll(".auth-form")
+  const signinForm = document.getElementById("signinForm")
+  const signupForm = document.getElementById("signupForm")
+  const successMessage = document.getElementById("successMessage")
+  const authBanner = document.getElementById("authBanner")
 
   // --- Helper function to show messages ---
-  function showBanner(message, type = 'error') {
-      if (!authBanner) return;
-      authBanner.textContent = message;
-      authBanner.className = `auth-banner ${type}`;
-      authBanner.style.display = 'block';
+  function showBanner(message, type = "error") {
+    if (!authBanner) return
+    authBanner.textContent = message
+    authBanner.className = `auth-banner ${type}`
+    authBanner.style.display = "block"
   }
 
   // --- Tab Switching Logic ---
-  tabButtons.forEach(button => {
-      button.addEventListener('click', () => {
-          tabButtons.forEach(btn => btn.classList.remove('active'));
-          button.classList.add('active');
-          const tab = button.dataset.tab;
-          authForms.forEach(form => {
-              form.classList.toggle('active', form.id === `${tab}Form`);
-          });
-      });
-  });
-
+  tabButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      tabButtons.forEach((btn) => btn.classList.remove("active"))
+      button.classList.add("active")
+      const tab = button.dataset.tab
+      authForms.forEach((form) => {
+        form.classList.toggle("active", form.id === `${tab}Form`)
+      })
+    })
+  })
   // Check if user is already signed in
   ;(async function checkSignedIn() {
     const token = getToken()
@@ -308,60 +307,33 @@ document.addEventListener("DOMContentLoaded", () => {
     })
   }
 
-  // --- NEW: PASSWORD VISIBILITY TOGGLE ---
-  const togglePasswordButtons = document.querySelectorAll('.toggle-password');
-  togglePasswordButtons.forEach(button => {
-      button.addEventListener('click', () => {
-          // Find the password input field right before the button
-          const passwordInput = button.previousElementSibling;
-          if (!passwordInput) return;
-          if (passwordInput.type === 'password') {
-              passwordInput.type = 'text';
-              button.innerHTML = `
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
-                      <line x1="1" y1="1" x2="23" y2="23"></line>
-                  </svg>
-              `;
-          } else {
-              passwordInput.type = 'password';
-              button.innerHTML = `
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                      <circle cx="12" cy="12" r="3"></circle>
-                  </svg>
-              `;
-          }
-      });
-  });
-})
-
-// Social Login Handlers
-document.querySelectorAll(".social-btn").forEach((btn) => {
-  btn.addEventListener("click", function () {
-    const ripple = document.createElement("span")
-    ripple.className = "btn-glow"
-    this.appendChild(ripple)
-    setTimeout(() => ripple.remove(), 600)
-    console.log("Social login clicked")
+  // Social Login Handlers
+  document.querySelectorAll(".social-btn").forEach((btn) => {
+    btn.addEventListener("click", function () {
+      const ripple = document.createElement("span")
+      ripple.className = "btn-glow"
+      this.appendChild(ripple)
+      setTimeout(() => ripple.remove(), 600)
+      console.log("Social login clicked")
+    })
   })
-})
 
-// Forgot Password Handler
-document.querySelector(".forgot-link")?.addEventListener("click", (e) => {
-  e.preventDefault()
-  window.location.href = "forgot-password.html"
-})
+  // Forgot Password Handler
+  document.querySelector(".forgot-link")?.addEventListener("click", (e) => {
+    e.preventDefault()
+    window.location.href = "forgot-password.html"
+  })
 
-// (removed setInterval(createParticle, 500) and related DOM)
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) {
-    console.log("CodeRabbit: Pausing background tasks")
-  } else {
-    console.log("CodeRabbit: Resuming background tasks")
-  }
-})
+  // (removed setInterval(createParticle, 500) and related DOM)
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      console.log("CodeRabbit: Pausing background tasks")
+    } else {
+      console.log("CodeRabbit: Resuming background tasks")
+    }
+  })
 
-window.addEventListener("load", () => {
-  console.log("Authentication UI Initialized")
+  window.addEventListener("load", () => {
+    console.log("Authentication UI Initialized")
+  })
 })

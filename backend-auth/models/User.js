@@ -22,6 +22,28 @@ const UserSchema = new mongoose.Schema({
   },
   passwordResetToken: String,
   passwordResetExpires: Date,
+  favorites: [
+    {
+      itemType: {
+        type: String,
+        enum: ["movie", "book", "music"],
+        required: true,
+      },
+      itemId: {
+        type: String,
+        required: true,
+      },
+      title: {
+        type: String,
+        required: true,
+      },
+      posterUrl: String,
+      addedAt: {
+        type: Date,
+        default: Date.now,
+      },
+    },
+  ],
 })
 
 // --- Password Hashing Logic --- and Email Normalization

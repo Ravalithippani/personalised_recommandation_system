@@ -5,9 +5,128 @@ const categoryTabs = document.querySelectorAll(".category-tab")
 const contentSections = document.querySelectorAll(".content-section")
 const searchInput = document.getElementById("searchInput")
 const recommendBtn = document.getElementById("recommendBtn")
+const genreInput = document.getElementById("genreInput")
+const genreRecommendBtn = document.getElementById("genreRecommendBtn")
+const resultsGrid = document.getElementById("results-grid")
+const suggestionsBox = document.getElementById("suggestions-box")
+const explanationContainer = document.getElementById("explanation-container")
 
 // API base with safe default and optional override via window.API_BASE
-const API_BASE = window.API_BASE || "http://localhost:8000"
+const DEFAULT_API_BASE = "http://127.0.0.1:8001"
+const RAW_API_BASE = (typeof window !== "undefined" && window.API_BASE) || ""
+const API_BASE = /^https?:\/\//.test(RAW_API_BASE) ? RAW_API_BASE.replace(/\/$/, "") : DEFAULT_API_BASE
+
+const AUTH_API_BASE = (window.AUTH_API_BASE || "http://localhost:8081").replace(/\/$/, "")
+
+let activeCategory = "movies"
+let selectedSuggestionIndex = -1
+
+function getAuthToken() {
+  try {
+    return localStorage.getItem("auth_token")
+  } catch {
+    return null
+  }
+}
+
+function getCurrentUser() {
+  const userStr = localStorage.getItem("currentUser")
+  return userStr ? JSON.parse(userStr) : null
+}
+
+function setCurrentUser(user) {
+  if (user) {
+    localStorage.setItem("currentUser", JSON.stringify(user))
+  } else {
+    localStorage.removeItem("currentUser")
+  }
+}
+
+function updateHeaderForUser() {
+  const user = getCurrentUser()
+  const navLinks = document.querySelector(".nav-links")
+
+  if (user && navLinks) {
+    navLinks.innerHTML = `
+      <a href="index.html" class="nav-link active">Home</a>
+      <div class="user-profile-nav" style="display: flex; align-items: center; gap: 12px;">
+        <span style="color: rgba(226, 232, 240, 0.8); font-size: 0.95rem;">Hi, ${user.name || user.email}</span>
+        <a href="profile.html" class="nav-link" style="display: flex; align-items: center; gap: 6px;">
+          <i class="fas fa-user-circle" style="font-size: 1.5rem;"></i>
+          <span>Profile</span>
+        </a>
+      </div>
+    `
+  }
+}
+
+function showToast(message, isRemoved = false) {
+  const toast = document.createElement("div")
+  toast.className = `toast-notification ${isRemoved ? "removed-toast" : ""}`
+  toast.innerHTML = `
+    <i class="fas ${isRemoved ? "fa-heart-broken" : "fa-heart"}"></i>
+    <span>${message}</span>
+  `
+  document.body.appendChild(toast)
+
+  setTimeout(() => {
+    toast.classList.add("removing")
+    setTimeout(() => {
+      if (toast.parentNode) {
+        toast.parentNode.removeChild(toast)
+      }
+    }, 300)
+  }, 3000)
+}
+
+async function toggleFavorite(item, category) {
+  const token = getAuthToken()
+
+  // Check for token - redirect to login if not found
+  if (!token) {
+    alert("Please log in to save favorites!")
+    window.location.href = "login.html"
+    return
+  }
+
+  const itemId = category === "movies" ? item.tmdbId : category === "books" ? item.isbn : item.track_id
+  const title = item.title || item.track_name || "Untitled"
+  const posterUrl = category === "movies" ? item.posterUrl : category === "books" ? item.coverUrl : ""
+
+  try {
+    // Send POST request with Authorization header
+    const res = await fetch(`${AUTH_API_BASE}/api/auth/favorites`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        itemType: categoryToPath(category),
+        itemId: String(itemId || ""),
+        title,
+        posterUrl,
+      }),
+    })
+
+    if (res.ok) {
+      const data = await res.json()
+      if (data.action === "added") {
+        showToast("Added to favorites!")
+        return true
+      } else {
+        showToast("Removed from favorites", true)
+        return false
+      }
+    } else {
+      console.error("[ORO] Favorite error:", await res.text())
+      return null
+    }
+  } catch (e) {
+    console.error("[ORO] Favorite error:", e)
+    return null
+  }
+}
 
 // Function to show input error
 function showInputError() {
@@ -16,6 +135,8 @@ function showInputError() {
 
 // Loading Screen Animation
 window.addEventListener("load", () => {
+  updateHeaderForUser()
+
   setTimeout(() => {
     loadingScreen.style.opacity = "0"
     loadingScreen.style.transform = "translateY(-100%)"
@@ -37,6 +158,8 @@ window.addEventListener("load", () => {
 categoryTabs.forEach((tab) => {
   tab.addEventListener("click", () => {
     const targetCategory = tab.dataset.category
+
+    activeCategory = targetCategory
 
     // Remove active class from all tabs
     categoryTabs.forEach((t) => t.classList.remove("active"))
@@ -137,102 +260,96 @@ function animateMusicEffects() {
   createMusicNotes()
 }
 
-// Create dynamic film particles
+// Create film particles for movies
 function createFilmParticles() {
-  const container = document.querySelector("#moviesSection .section-background")
+  const container = document.querySelector(".film-particles")
   if (!container) return
 
   for (let i = 0; i < 5; i++) {
-    const particle = document.createElement("div")
-    particle.className = "dynamic-particle"
-    particle.innerHTML = "🎬"
-    particle.style.cssText = `
-            position: absolute;
-            font-size: 1.5rem;
-            color: rgba(255, 107, 107, 0.6);
-            pointer-events: none;
-            animation: particleFloat 8s linear infinite;
-            left: ${Math.random() * 100}%;
-            top: ${Math.random() * 100}%;
-            animation-delay: ${i * 1.6}s;
-        `
-
-    container.appendChild(particle)
-
-    // Remove particle after animation
     setTimeout(() => {
-      if (particle.parentNode) {
-        particle.parentNode.removeChild(particle)
-      }
-    }, 8000)
+      const particle = document.createElement("div")
+      particle.innerHTML = "🎬"
+      particle.style.cssText = `
+                position: absolute;
+                font-size: 2rem;
+                animation: particleFloat 15s linear forwards;
+                left: ${Math.random() * 100}%;
+                opacity: 0;
+            `
+
+      container.appendChild(particle)
+
+      setTimeout(() => {
+        if (particle.parentNode) {
+          particle.parentNode.removeChild(particle)
+        }
+      }, 15000)
+    }, i * 3000)
   }
 }
 
-// Create floating text particles
+// Create text particles for books
 function createTextParticles() {
-  const container = document.querySelector("#booksSection .section-background")
+  const container = document.querySelector(".floating-pages")
   if (!container) return
 
-  const textSymbols = ["📖", "📚", "✍️", "📝", "📄"]
+  const words = ["📖", "✨", "📚", "💭", "🖋️"]
 
   for (let i = 0; i < 5; i++) {
-    const particle = document.createElement("div")
-    particle.className = "dynamic-particle"
-    particle.innerHTML = textSymbols[Math.floor(Math.random() * textSymbols.length)]
-    particle.style.cssText = `
-            position: absolute;
-            font-size: 1.5rem;
-            color: rgba(76, 205, 196, 0.6);
-            pointer-events: none;
-            animation: particleFloat 8s linear infinite;
-            left: ${Math.random() * 100}%;
-            top: ${Math.random() * 100}%;
-            animation-delay: ${i * 1.6}s;
-        `
-
-    container.appendChild(particle)
-
     setTimeout(() => {
-      if (particle.parentNode) {
-        particle.parentNode.removeChild(particle)
-      }
-    }, 8000)
+      const particle = document.createElement("div")
+      particle.innerHTML = words[i % words.length]
+      particle.style.cssText = `
+                position: absolute;
+                font-size: 2rem;
+                animation: particleFloat 15s linear forwards;
+                left: ${Math.random() * 100}%;
+                opacity: 0;
+            `
+
+      container.appendChild(particle)
+
+      setTimeout(() => {
+        if (particle.parentNode) {
+          particle.parentNode.removeChild(particle)
+        }
+      }, 15000)
+    }, i * 3000)
   }
 }
 
-// Create floating music notes
+// Create music notes
 function createMusicNotes() {
-  const container = document.querySelector("#musicSection .section-background")
+  const container = document.querySelector(".music-notes")
   if (!container) return
 
-  const musicSymbols = ["🎵", "🎶", "🎤", "🎧", "🎸"]
+  const notes = ["♪", "♫", "♬", "🎵", "🎶"]
 
   for (let i = 0; i < 5; i++) {
-    const particle = document.createElement("div")
-    particle.className = "dynamic-particle"
-    particle.innerHTML = musicSymbols[Math.floor(Math.random() * musicSymbols.length)]
-    particle.style.cssText = `
-            position: absolute;
-            font-size: 1.5rem;
-            color: rgba(69, 183, 209, 0.6);
-            pointer-events: none;
-            animation: particleFloat 8s linear infinite;
-            left: ${Math.random() * 100}%;
-            top: ${Math.random() * 100}%;
-            animation-delay: ${i * 1.6}s;
-        `
-
-    container.appendChild(particle)
-
     setTimeout(() => {
-      if (particle.parentNode) {
-        particle.parentNode.removeChild(particle)
-      }
-    }, 8000)
+      const particle = document.createElement("div")
+      particle.innerHTML = notes[i % notes.length]
+      particle.className = "note"
+      particle.style.cssText = `
+                position: absolute;
+                font-size: 2rem;
+                animation: particleFloat 15s linear forwards;
+                left: ${Math.random() * 100}%;
+                opacity: 0;
+            `
+
+      container.appendChild(particle)
+
+      setTimeout(() => {
+        if (particle.parentNode) {
+          particle.parentNode.removeChild(particle)
+        }
+      }, 15000)
+    }, i * 3000)
   }
 }
 
-// Add particle float animation
+// Particle float animation
 const particleFloatCSS = `
 @keyframes particleFloat {
     0% { 
@@ -257,18 +374,14 @@ const style = document.createElement("style")
 style.textContent = particleFloatCSS
 document.head.appendChild(style)
 
-// Search functionality
-let suggestionsEl
-let selectedSuggestionIndex = -1
-
-function ensureSuggestionsEl() {
-  if (suggestionsEl) return
-  suggestionsEl = document.createElement("div")
-  suggestionsEl.id = "searchSuggestions"
-  suggestionsEl.className = "search-suggestions"
+// Helper to create suggestions element if not present
+function createSuggestionsEl() {
+  const el = document.createElement("div")
+  el.id = "searchSuggestions"
+  el.className = "search-suggestions"
   const wrapper = searchInput.parentElement || document.body
   wrapper.style.position = wrapper.style.position || "relative"
-  Object.assign(suggestionsEl.style, {
+  Object.assign(el.style, {
     position: "absolute",
     top: "100%",
     left: "0",
@@ -284,55 +397,74 @@ function ensureSuggestionsEl() {
     maxHeight: "240px",
     overflowY: "auto",
   })
-  wrapper.appendChild(suggestionsEl)
+  wrapper.appendChild(el)
+  return el
 }
 
-async function showSearchSuggestions(query) {
-  ensureSuggestionsEl()
-  const activeTab = document.querySelector(".category-tab.active")
-  const category = activeTab ? activeTab.dataset.category : "movies"
-  const endpoint =
-    category === "movies"
-      ? `${API_BASE}/search/movie/${encodeURIComponent(query)}`
-      : category === "books"
-        ? `${API_BASE}/search/book/${encodeURIComponent(query)}`
-        : null
+// Helper to get suggestions element safely
+function getSuggestionsEl() {
+  return document.getElementById("searchSuggestions") || null
+}
 
-  if (!endpoint) {
-    hideSearchSuggestions()
-    return
-  }
+// Helper to hide suggestions element
+function hideSearchSuggestions() {
+  const el = getSuggestionsEl()
+  if (!el) return
+  el.style.display = "none"
+  el.innerHTML = ""
+  selectedSuggestionIndex = -1
+}
+
+// Helper to highlight a suggestion item
+function highlightSuggestion(index) {
+  const el = getSuggestionsEl()
+  if (!el) return
+  const items = el.querySelectorAll(".suggestion-item")
+  items.forEach((item, i) => {
+    item.style.background = i === index ? "rgba(78,205,196,0.12)" : "transparent"
+  })
+}
+
+// Search functionality
+async function showSearchSuggestions(query) {
+  const suggestionsEl = document.getElementById("searchSuggestions") || createSuggestionsEl()
+  const makeUrl = (base) => `${base}/search/${categoryToPath(activeCategory)}/${encodeURIComponent(query)}`
+  const endpoint = makeUrl(API_BASE)
 
   try {
-    const res = await fetch(endpoint, { credentials: "omit" })
+    let res = await fetch(endpoint)
+    let ct = res.headers.get("content-type") || ""
+    if (!res.ok || !ct.includes("application/json")) {
+      // retry once against the default API in case API_BASE was misconfigured
+      if (API_BASE !== DEFAULT_API_BASE) {
+        res = await fetch(makeUrl(DEFAULT_API_BASE))
+        ct = res.headers.get("content-type") || ""
+      }
+    }
+    if (!res.ok || !ct.includes("application/json")) {
+      throw new Error(`Suggestions fetch failed: ${res.status} ${ct}`)
+    }
     const data = await res.json()
     const items = (data.results || []).slice(0, 10)
     if (!items.length) {
       hideSearchSuggestions()
       return
     }
-
-    selectedSuggestionIndex = -1
-
     suggestionsEl.innerHTML = items
       .map(
         (txt) =>
           `<button type="button" class="suggestion-item" style="display:block;width:100%;text-align:left;padding:8px 10px;border-radius:6px;border:none;background:transparent;color:#e2e8f0;cursor:pointer;">${txt}</button>`,
       )
       .join("")
-
     suggestionsEl.style.display = "block"
-
-    suggestionsEl.querySelectorAll(".suggestion-item").forEach((btn, index) => {
+    selectedSuggestionIndex = -1
+    suggestionsEl.querySelectorAll(".suggestion-item").forEach((btn) => {
       btn.onclick = () => {
         searchInput.value = btn.textContent
         hideSearchSuggestions()
-        // Trigger recommendation immediately
         recommendBtn.click()
       }
       btn.onmouseenter = () => {
-        // Clear keyboard selection when hovering
-        clearSuggestionHighlight()
         btn.style.background = "rgba(78,205,196,0.12)"
       }
       btn.onmouseleave = () => {
@@ -345,32 +477,9 @@ async function showSearchSuggestions(query) {
   }
 }
 
-function clearSuggestionHighlight() {
-  if (!suggestionsEl) return
-  suggestionsEl.querySelectorAll(".suggestion-item").forEach((btn) => {
-    btn.style.background = "transparent"
-  })
-}
-
-function highlightSuggestion(index) {
-  if (!suggestionsEl) return
-  const items = suggestionsEl.querySelectorAll(".suggestion-item")
-  if (index < 0 || index >= items.length) return
-
-  clearSuggestionHighlight()
-  items[index].style.background = "rgba(78,205,196,0.2)"
-  items[index].scrollIntoView({ block: "nearest", behavior: "smooth" })
-}
-
-function hideSearchSuggestions() {
-  if (suggestionsEl) {
-    suggestionsEl.style.display = "none"
-    selectedSuggestionIndex = -1
-  }
-}
-
 // Close suggestions when clicking outside
 document.addEventListener("click", (e) => {
+  const suggestionsEl = getSuggestionsEl()
   if (!suggestionsEl) return
   if (e.target === searchInput || suggestionsEl.contains(e.target)) return
   hideSearchSuggestions()
@@ -388,8 +497,8 @@ searchInput.addEventListener("input", (e) => {
 })
 
 searchInput.addEventListener("keydown", (e) => {
+  const suggestionsEl = getSuggestionsEl()
   if (!suggestionsEl || suggestionsEl.style.display === "none") return
-
   const items = suggestionsEl.querySelectorAll(".suggestion-item")
   if (!items.length) return
 
@@ -404,10 +513,8 @@ searchInput.addEventListener("keydown", (e) => {
   } else if (e.key === "Enter") {
     e.preventDefault()
     if (selectedSuggestionIndex >= 0 && selectedSuggestionIndex < items.length) {
-      // Select the highlighted suggestion
       items[selectedSuggestionIndex].click()
     } else {
-      // No selection, just trigger recommendation with current input
       recommendBtn.click()
     }
   } else if (e.key === "Escape") {
@@ -418,35 +525,18 @@ searchInput.addEventListener("keydown", (e) => {
 // Recommend button functionality
 recommendBtn.addEventListener("click", async () => {
   const query = searchInput.value.trim()
-  const activeTab = document.querySelector(".category-tab.active")
-  const category = activeTab ? activeTab.dataset.category : "movies"
-
   if (!query) {
     showInputError()
     return
   }
-
-  // Button micro-interaction + temporary loading state
-  triggerRecommendationAnimation()
-
-  await fetchAndRenderRecommendations(query, category)
+  await fetchAndRenderRecommendations(query, activeCategory)
 })
 
 async function fetchAndRenderRecommendations(query, category) {
   const activeSection = document.querySelector(".content-section.active")
   const grid = activeSection?.querySelector(".content-grid")
   if (!grid) return
-
-  let endpoint = null
-  if (category === "movies") {
-    endpoint = `${API_BASE}/recommend/movie/${encodeURIComponent(query)}`
-  } else if (category === "books") {
-    endpoint = `${API_BASE}/recommend/book/${encodeURIComponent(query)}`
-  } else {
-    // Music not yet supported by backend; show gentle error animation
-    showNotFoundError("Music recommendations coming soon!")
-    return
-  }
+  const endpoint = `${API_BASE}/recommend/${categoryToPath(category)}/${encodeURIComponent(query)}`
 
   // Show loading state
   grid.innerHTML = `
@@ -460,12 +550,19 @@ async function fetchAndRenderRecommendations(query, category) {
     </div>
   `
 
+  if (explanationContainer) {
+    explanationContainer.style.display = "none"
+    explanationContainer.innerHTML = ""
+  }
+
   try {
     const res = await fetch(endpoint, { credentials: "omit" })
 
     if (!res.ok) {
       if (res.status === 404) {
-        showNotFoundError(`"${query}" not found. Try another ${category === "movies" ? "movie" : "book"}.`)
+        showNotFoundError(
+          `"${query}" not found. Try another ${category === "movies" ? "movie" : category === "books" ? "book" : "track"}.`,
+        )
         grid.innerHTML = ""
         return
       }
@@ -501,9 +598,14 @@ async function fetchAndRenderRecommendations(query, category) {
       }, index * 100)
     })
 
-    // Optionally use explanation from API (kept to console to preserve exact UI)
-    if (data.explanation) {
-      console.log("[ORO] Explanation:", data.explanation)
+    if (data.explanation && explanationContainer) {
+      explanationContainer.innerHTML = `
+        <div class="explanation-text">
+          <i class="fas fa-lightbulb" style="margin-right: 8px; color: rgba(78,205,196,0.9);"></i>
+          ${data.explanation}
+        </div>
+      `
+      explanationContainer.style.display = "block"
     }
   } catch (e) {
     console.error("[ORO] recommendation error:", e)
@@ -538,10 +640,14 @@ function createAPICard(rec, category) {
   col.className = "col-lg-4 col-md-6"
   col.style.cssText = "opacity:0; transform: translateY(30px); transition: all 0.5s ease;"
 
-  const imageUrl = category === "movies" ? rec.posterUrl : category === "books" ? rec.coverUrl : ""
-  const title = rec.title || "Recommendation"
+  const imageUrl = category === "movies" ? rec.posterUrl : category === "books" ? rec.coverUrl : "" // music - optional cover
+  const title = category === "music" ? rec.title || rec.track_name || "Track" : rec.title || "Recommendation"
   const subtitle =
-    category === "movies" ? (rec.genres || "").toString() : category === "books" ? (rec.authors || "").toString() : ""
+    category === "movies"
+      ? (rec.genres || "").toString()
+      : category === "books"
+        ? (rec.authors || "").toString()
+        : [rec.artist_name, rec.genre].filter(Boolean).join(" • ") // music
 
   const mediaClass = category === "movies" ? "movie-poster" : category === "books" ? "book-cover" : "album-cover"
   const iconClass =
@@ -550,21 +656,61 @@ function createAPICard(rec, category) {
     category === "movies" ? "fas fa-star" : category === "books" ? "fas fa-bookmark" : "fas fa-headphones"
 
   col.innerHTML = `
-    <div class="recommendation-card">
+    <div class="recommendation-card" style="position: relative;">
       <div class="card-glow"></div>
+      <button class="favorite-btn" style="position: absolute; top: 16px; right: 16px; z-index: 10; background: rgba(0,0,0,0.6); border: none; border-radius: 50%; width: 40px; height: 40px; cursor: pointer; transition: all 0.3s; backdrop-filter: blur(4px);">
+        <i class="fas fa-heart" style="color: rgba(255,107,107,0.8); font-size: 1.2rem; transition: all 0.3s;"></i>
+      </button>
       <div class="card-content">
-        <div class="${mediaClass}" style="${imageUrl ? `background-image:url('${imageUrl}');background-size:cover;background-position:center;` : ""}">
+        <div class="${mediaClass}" style="${
+          imageUrl ? `background-image:url('${imageUrl}');background-size:cover;background-position:center;` : ""
+        }">
           <i class="${leadingIcon} ${iconClass}"></i>
         </div>
         <h3>${title}</h3>
         <p>${subtitle ? String(subtitle).slice(0, 80) : "AI-picked just for you."}</p>
         <div class="genre-tags">
           <span class="tag">AI-Powered</span>
-          <span class="tag">${category === "books" ? "Books" : "Movies"}</span>
+          <span class="tag">${category === "books" ? "Books" : category === "movies" ? "Movies" : "Music"}</span>
         </div>
       </div>
     </div>
   `
+
+  const favBtn = col.querySelector(".favorite-btn")
+  const heartIcon = favBtn.querySelector(".fa-heart")
+
+  favBtn.addEventListener("click", async (e) => {
+    e.stopPropagation()
+    const result = await toggleFavorite(rec, category)
+
+    if (result === true) {
+      // Added to favorites - make heart solid red
+      heartIcon.style.color = "rgba(255,77,77,1)"
+      heartIcon.classList.remove("far")
+      heartIcon.classList.add("fas")
+      favBtn.style.transform = "scale(1.2)"
+      setTimeout(() => (favBtn.style.transform = "scale(1)"), 200)
+    } else if (result === false) {
+      // Removed from favorites - make heart outlined
+      heartIcon.style.color = "rgba(255,107,107,0.8)"
+      heartIcon.classList.remove("fas")
+      heartIcon.classList.add("far")
+    }
+  })
+
+  favBtn.addEventListener("mouseenter", () => {
+    favBtn.style.transform = "scale(1.1)"
+    heartIcon.style.color = "rgba(255,77,77,1)"
+  })
+
+  favBtn.addEventListener("mouseleave", () => {
+    favBtn.style.transform = "scale(1)"
+    if (!heartIcon.classList.contains("fas")) {
+      heartIcon.style.color = "rgba(255,107,107,0.8)"
+    }
+  })
+
   return col
 }
 
@@ -642,6 +788,7 @@ const sparkleCSS = `
 }
 `
 
+// Add the CSS to the document
 style.textContent += sparkleCSS
 
 // Add spin animation for loading spinner
@@ -662,249 +809,103 @@ style.textContent += `
 
 // Initialize the app
 document.addEventListener("DOMContentLoaded", () => {
-    // --- Get all UI elements ---
-    const searchInput = document.getElementById("searchInput");
-    const recommendBtn = document.getElementById("recommendBtn");
-    const categoryTabs = document.querySelectorAll(".category-tab");
-    const suggestionsBox = document.createElement('div');
-    suggestionsBox.className = 'suggestions-box';
-    searchInput.parentElement.appendChild(suggestionsBox); // Append suggestions box
+  // --- UI Elements --- (already defined above)
+  // --- Loading Screen Animation --- (already defined above)
+  // --- Tab Switching --- (already defined above)
+  // --- Autocomplete Logic --- (already defined above)
+  // --- Recommendation Button Logic --- (already defined above)
 
-    let activeCategory = 'movies';
+  if (genreRecommendBtn) {
+    genreRecommendBtn.addEventListener("click", async () => {
+      const genre = genreInput.value.trim()
+      if (!genre) {
+        alert("Please enter a genre (e.g., Action, Romance, Jazz)")
+        return
+      }
+      await fetchGenreRecommendations(genre, activeCategory)
+    })
+  }
+})
 
-    // --- Tab Switching ---
-    categoryTabs.forEach(tab => {
-        tab.addEventListener("click", () => {
-            activeCategory = tab.dataset.category;
-            categoryTabs.forEach(t => t.classList.remove("active"));
-            tab.classList.add("active");
-            // Update resultsGrid to the new active section
-            const newGrid = document.querySelector(`#${activeCategory}Section .content-grid`);
-            if (newGrid) newGrid.innerHTML = '';
-            searchInput.value = '';
-            suggestionsBox.innerHTML = '';
-        });
-    });
+async function fetchGenreRecommendations(genre, category) {
+  const activeSection = document.querySelector(".content-section.active")
+  const grid = activeSection?.querySelector(".content-grid")
+  if (!grid) return
 
-    // --- Helper Functions ---
-    function debounce(func, delay = 350) {
-        let timeoutId;
-        return (...args) => {
-            clearTimeout(timeoutId);
-            timeoutId = setTimeout(() => func.apply(this, args), delay);
-        };
+  const endpoint = `${API_BASE}/recommend/genre/${categoryToPath(category)}/${encodeURIComponent(genre)}`
+
+  // Show loading state
+  grid.innerHTML = `
+    <div class="col-12 text-center" style="padding: 60px 20px;">
+      <div style="display: inline-block; animation: spin 1s linear infinite;">
+        <i class="fas fa-spinner" style="font-size: 3rem; color: rgba(255,107,107,0.8);"></i>
+      </div>
+      <p style="margin-top: 20px; color: rgba(226,232,240,0.7); font-size: 1.1rem;">
+        Finding ${genre} ${category}...
+      </p>
+    </div>
+  `
+
+  if (explanationContainer) {
+    explanationContainer.style.display = "none"
+    explanationContainer.innerHTML = ""
+  }
+
+  try {
+    const res = await fetch(endpoint, { credentials: "omit" })
+
+    if (!res.ok) {
+      if (res.status === 404) {
+        showNotFoundError(`No ${category} found for genre: ${genre}. Try another genre.`)
+        grid.innerHTML = ""
+        return
+      }
+      throw new Error(`HTTP ${res.status}`)
     }
 
-    // --- Autocomplete Logic ---
-    const handleSearchInput = async () => {
-        const query = searchInput.value;
-        if (query.length < 3) {
-            suggestionsBox.innerHTML = '';
-            suggestionsBox.style.display = 'none';
-            return;
-        }
-        try {
-            // --- THIS IS THE FIX ---
-            const apiType = activeCategory === 'movies' ? 'movie' : 'book';
-            const response = await fetch(`http://127.0.0.1:8001/search/${apiType}/${query}`);
-            const data = await response.json();
-            suggestionsBox.innerHTML = '';
-            if (data.results && data.results.length > 0) {
-                data.results.forEach(title => {
-                    const item = document.createElement('div');
-                    item.className = 'suggestion-item';
-                    item.textContent = title;
-                    item.addEventListener('click', () => {
-                        searchInput.value = title;
-                        suggestionsBox.innerHTML = '';
-                        suggestionsBox.style.display = 'none';
-                        recommendBtn.click();
-                    });
-                    suggestionsBox.appendChild(item);
-                });
-                suggestionsBox.style.display = 'block';
-            } else {
-                suggestionsBox.style.display = 'none';
-            }
-        } catch (error) {
-            console.error("Error fetching suggestions:", error);
-            suggestionsBox.style.display = 'none';
-        }
-    };
-    searchInput.addEventListener('input', debounce(handleSearchInput));
+    const data = await res.json()
 
-    // Hide suggestions when clicking outside
-    document.addEventListener('click', (e) => {
-        if (!suggestionsBox.contains(e.target) && e.target !== searchInput) {
-            suggestionsBox.innerHTML = '';
-            suggestionsBox.style.display = 'none';
-        }
-    });
-
-    // --- Recommendation Button Logic ---
-    recommendBtn.addEventListener("click", async () => {
-        const query = searchInput.value.trim();
-        if (!query) return;
-
-        const originalBtnHTML = recommendBtn.innerHTML;
-        recommendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> <span>Analyzing...</span>';
-        recommendBtn.disabled = true;
-
-        try {
-            // --- THIS IS THE FIX ---
-            const apiType = activeCategory === 'movies' ? 'movie' : 'book';
-            const endpoint = `http://127.0.0.1:8001/recommend/${apiType}/${query}`;
-            const response = await fetch(endpoint);
-            const data = await response.json();
-
-            // Find the correct grid for the active section
-            const grid = document.querySelector(`#${activeCategory}Section .content-grid`);
-            if (grid) {
-                grid.innerHTML = '';
-                if (data.recommendations && data.recommendations.length > 0) {
-                    data.recommendations.forEach(rec => {
-                        const card = document.createElement('div');
-                        card.className = "col-lg-4 col-md-6";
-                        card.innerHTML = `
-                            <div class="recommendation-card">
-                                <div class="card-content">
-                                    <div class="${apiType === 'movie' ? 'movie-poster' : 'book-cover'}"
-                                        style="background-image:url('${apiType === 'movie' ? rec.posterUrl : rec.coverUrl || ''}');background-size:cover;background-position:center;">
-                                    </div>
-                                    <h3>${rec.title || ''}</h3>
-                                    <p>${apiType === 'movie' ? (rec.genres || '') : (rec.authors || '')}</p>
-                                </div>
-                            </div>
-                        `;
-                        grid.appendChild(card);
-                    });
-                } else {
-                    grid.innerHTML = `<div class="col-12"><p class="error-message">No recommendations found.</p></div>`;
-                }
-            }
-        } catch (error) {
-            console.error("Error fetching recommendations:", error);
-        } finally {
-            recommendBtn.innerHTML = originalBtnHTML;
-            recommendBtn.disabled = false;
-        }
-    });
-    function displayResults(items, type) {
-        resultsGrid.innerHTML = '';
-        if (!Array.isArray(items) || items.length === 0) {
-            resultsGrid.innerHTML = `<p class="text-muted text-center">No results found.</p>`;
-            return;
-        }
-
-        items.forEach(item => {
-            const col = document.createElement('div');
-            col.className = 'col-lg-4 col-md-6 mb-4';
-
-            const posterSrc = item.posterUrl || item.coverUrl || 'https://via.placeholder.com/500x750.png?text=No+Image';
-            const itemTitle = item.title || item.track_name;
-            const itemSubtitle = item.genres || item.authors || item.artist_name || '';
-
-            // Create the card element
-            const card = document.createElement('div');
-            card.className = 'recommendation-card';
-            card.innerHTML = `
-                <div class="card-glow"></div>
-                <div class="movie-poster" style="background-image: url('${posterSrc}'); background-size: cover; background-position: center;">
-                    <i class="fas fa-play play-overlay"></i>
-                </div>
-                <div class="card-content">
-                    <h3>${itemTitle}</h3>
-                    <p>${itemSubtitle}</p>
-                </div>
-            `;
-
-            // --- NEW: FAVORITE BUTTON ---
-            const favoriteBtn = document.createElement('button');
-            favoriteBtn.className = 'favorite-btn';
-            favoriteBtn.innerHTML = '<i class="fas fa-heart"></i>'; // Font Awesome heart icon
-
-            // Add the click logic for the button
-            favoriteBtn.addEventListener('click', (e) => {
-                e.stopPropagation(); // Prevents other clicks from firing
-                favoriteBtn.classList.toggle('favorited');
-                console.log(`Toggled favorite for: ${itemTitle}`);
-                // Later, we will add an API call here to save this to the database
-            });
-
-            // Add the button to the card
-            card.appendChild(favoriteBtn);
-            col.appendChild(card);
-            resultsGrid.appendChild(col);
-        });
-
-        // Re-initialize Feather Icons to render the new heart icons
-        feather.replace();
-
-        // --- NEW: Add event listeners to the new favorite buttons ---
-        document.querySelectorAll('.favorite-btn').forEach(button => {
-            button.addEventListener('click', (e) => {
-                e.stopPropagation(); // Prevents other clicks from firing
-                button.classList.toggle('favorited');
-                const title = button.dataset.title;
-                console.log(`Toggled favorite for: ${title}`);
-                // Later, we will add an API call here to save this to the database
-            });
-        });
+    if (data.error) {
+      console.warn("[ORO] API returned error:", data.error)
+      showNotFoundError(data.error)
+      grid.innerHTML = ""
+      return
     }
 
-});
+    const recs = data.recommendations || []
 
-// --- THIS IS THE CORRECTED FUNCTION ---
-function showRecommendationResults(query, category) {
-    const activeSection = document.querySelector(".content-section.active");
-    const grid = activeSection.querySelector(".content-grid");
+    if (recs.length === 0) {
+      showNotFoundError(`No ${category} found for genre: ${genre}.`)
+      grid.innerHTML = ""
+      return
+    }
 
-    // Clear previous results
-    grid.innerHTML = "";
+    // Clear loading state and render fresh results
+    grid.innerHTML = ""
+    recs.forEach((rec, index) => {
+      const card = createAPICard(rec, category)
+      grid.appendChild(card)
+      // Staggered animation
+      setTimeout(() => {
+        card.style.opacity = "1"
+        card.style.transform = "translateY(0)"
+      }, index * 100)
+    })
 
-    // Simulate API call and display results
-    setTimeout(() => {
-        // This is where you would normally get data from your API
-        const dummyData = [
-            { title: "Recommendation 1", genres: "Genre A" },
-            { title: "Recommendation 2", genres: "Genre B" },
-            { title: "Recommendation 3", genres: "Genre C" },
-            { title: "Recommendation 4", genres: "Genre D" },
-            { title: "Recommendation 5", genres: "Genre E" },
-        ];
-
-        if (dummyData.length === 0) {
-            grid.innerHTML = `<p class="text-muted text-center">No recommendations found.</p>`;
-            return;
-        }
-
-        dummyData.forEach(rec => {
-            const cardCol = createRecommendationCard(rec, category);
-
-            // --- FAVORITE BUTTON LOGIC ---
-            const favoriteBtn = document.createElement('button');
-            favoriteBtn.className = 'favorite-btn';
-            favoriteBtn.innerHTML = '<i class="fas fa-heart"></i>'; // Font Awesome Icon
-
-            favoriteBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                favoriteBtn.classList.toggle('favorited');
-                console.log(`Toggled favorite for: ${rec.title}`);
-                // Later, we will add an API call here to save this
-            });
-
-            // Append the button to the card inside the column
-            cardCol.querySelector('.recommendation-card').appendChild(favoriteBtn);
-
-            grid.appendChild(cardCol);
-
-            // Animate the new card
-            setTimeout(() => {
-                cardCol.style.opacity = "1";
-                cardCol.style.transform = "translateY(0)";
-            }, 100);
-        });
-    }, 1000); // Simulate 1s loading time
+    if (data.explanation && explanationContainer) {
+      explanationContainer.innerHTML = `
+        <div class="explanation-text">
+          <i class="fas fa-random" style="margin-right: 8px; color: rgba(255,107,107,0.9);"></i>
+          ${data.explanation}
+        </div>
+      `
+      explanationContainer.style.display = "block"
+    }
+  } catch (e) {
+    console.error("[ORO] genre recommendation error:", e)
+    showNotFoundError("Failed to load genre recommendations. Please try again.")
+    grid.innerHTML = ""
+  }
 }
 
 // Performance optimization
@@ -930,3 +931,6 @@ document.addEventListener("visibilitychange", () => {
     optimizedAnimation()
   }
 })
+
+// Map category to correct API path (fixes music -> musi bug)
+const categoryToPath = (cat) => (cat === "movies" ? "movie" : cat === "books" ? "book" : "music")

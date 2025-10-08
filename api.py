@@ -17,14 +17,14 @@ load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 GOOGLE_BOOKS_API_KEY = os.getenv("GOOGLE_BOOKS_API_KEY")
-
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 # --- CACHING ---
 _cache = {}
 
-# --- HELPER FUNCTIONS: DATA PROCESSING ---
 
+# --- HELPER FUNCTIONS: DATA PROCESSING ---
 def process_title_for_search(title: str):
-    """Applies all normalization rules to a title string for searching."""
     if not isinstance(title, str): return ""
     processed_title = re.sub(r'\s*\([^)]*\)\s*$', '', title).strip()
     if processed_title.endswith(', The'): processed_title = 'The ' + processed_title[:-5]
@@ -33,26 +33,21 @@ def process_title_for_search(title: str):
     processed_title = re.sub(r'^(the|a|an)\s+', '', processed_title, flags=re.IGNORECASE)
     return re.sub(r'[^a-zA-Z0-9]', '', processed_title).lower()
 
-
 def load_movie_data():
-    """Loads all movie data files intelligently to prevent column conflicts."""
+    """Loads all movie data files, including custom additions, and merges them intelligently."""
     if "movies" in _cache: return _cache["movies"]
     
-    # Load the main embeddings file, which has our primary title list
     embeddings_df = pd.read_parquet("data/movie_embeddings.parquet")
-    
-    # From the other files, ONLY load the columns we need
     movies_genres_df = pd.read_csv("data/movies.csv")[['movieId', 'genres']]
     links_df = pd.read_csv("data/links.csv")[['movieId', 'tmdbId']]
     
-    # Merge the dataframes
     merged_df = pd.merge(embeddings_df, movies_genres_df, on='movieId', how='inner')
     final_df = pd.merge(merged_df, links_df, on='movieId', how='inner')
     
     try:
         custom_embeddings_df = pd.read_parquet("data/custom_embeddings.parquet")
         final_df = pd.concat([final_df, custom_embeddings_df], ignore_index=True)
-        print(f"Successfully loaded {len(custom_embeddings_df)} custom movies.")
+        print(f"Successfully loaded and combined {len(custom_embeddings_df)} custom movies.")
     except FileNotFoundError:
         print("No custom movies file found.")
         
@@ -64,16 +59,27 @@ def load_movie_data():
     print("Movie data loaded and cached.")
     return final_df
 
-
 def load_book_data():
     """Loads and prepares the book data."""
     if "books" in _cache: return _cache["books"]
+    
     df = pd.read_parquet("data/book_embeddings.parquet")
     df.dropna(subset=['isbn', 'title', 'authors'], inplace=True)
     df['search_title'] = df['title'].apply(process_title_for_search)
+    
     _cache["books"] = df
     print("Book data loaded and cached.")
     return df
+def load_music_data():
+    if "music" in _cache: return _cache["music"]
+    df = pd.read_parquet("data/music_embeddings.parquet")
+    df.dropna(subset=['track_id', 'track_name', 'artist_name', 'embedding'], inplace=True)
+    df['search_title'] = df['track_name'].apply(process_title_for_search)
+    df['search_artist'] = df['artist_name'].apply(lambda x: re.sub(r'[^a-zA-Z0-9]', '', str(x)).lower())
+    _cache["music"] = df
+    print("Music data loaded.")
+    return df
+
 
 # --- HELPER FUNCTIONS: EXTERNAL APIS ---
 
@@ -120,6 +126,7 @@ def fetch_book_cover(isbn: str):
         
     return "https://via.placeholder.com/500x750.png?text=No+Cover+Found"
 
+# --- HELPER FUNCTIONS: RECOMMENDATION LOGIC ---
 chat_model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
 def get_movie_recommendations(title: str, df: pd.DataFrame, top_n: int = 5):
@@ -139,58 +146,41 @@ def get_movie_recommendations(title: str, df: pd.DataFrame, top_n: int = 5):
     return df.iloc[top_indices]
 
 def get_book_recommendations(title: str, df: pd.DataFrame, top_n: int = 5):
-    """Finds books similar to a given title using a flexible 'contains' search."""
+    """Finds books similar to a given title."""
     search_term = process_title_for_search(title)
+    book_row = df[df['search_title'] == search_term]
+    if book_row.empty: return pd.DataFrame()
     
-    # Use .str.contains() for a partial match instead of an exact match (==)
-    book_row = df[df['search_title'].str.contains(search_term, na=False)]
-    
-    if book_row.empty:
-        return pd.DataFrame()
-
-    # If multiple books match, we'll just use the first one found.
-    first_match = book_row.iloc[0]
-    query_embedding = first_match['embedding']
-    
+    query_embedding = book_row['embedding'].iloc[0]
     query_embedding = np.array(query_embedding).reshape(1, -1)
     all_embeddings = np.stack(df['embedding'].values)
     similarities = cosine_similarity(query_embedding, all_embeddings).flatten()
     
-    original_book_index = first_match.name
+    original_book_index = book_row.index[0]
     all_top_indices = np.argsort(similarities)[::-1][:top_n + 5]
     top_indices = [idx for idx in all_top_indices if idx != original_book_index][:top_n]
     return df.iloc[top_indices]
 
- 
-def get_recommendation_explanation(original_movie: str, recommended_movie: str):
-    """Generates a brief explanation, using a cache to avoid repeat API calls."""
-    cache_key = f"exp_{original_movie}_{recommended_movie}"
-    if cache_key in _cache:
-        print(f"Returning cached explanation for '{original_movie}'.")
-        return _cache[cache_key]
-    
-    prompt = f"You are a friendly movie expert. In one concise sentence, explain why someone who liked '{original_movie}' might also enjoy '{recommended_movie}'."
-    try:
-        response = chat_model.generate_content(prompt)
-        explanation = response.text
-        _cache[cache_key] = explanation # Save to cache
-        return explanation
-    except Exception as e:
-        return f"Could not generate explanation: {e}"
+def get_music_recommendations(track_title: str, df: pd.DataFrame, top_n: int = 5):
+    """Finds songs similar to a given track using precomputed embeddings."""
+    search_term = process_title_for_search(track_title)
+    song_row = df[df["search_title"] == search_term]
+    if song_row.empty:
+        return pd.DataFrame()
 
-# --- THIS IS THE NEW, UNIFIED EXPLANATION FUNCTION ---
-def get_explanation(original_item: str, recommended_item: str, item_type: str = 'movie'):
-    """Generates a brief explanation for a recommendation, for any item type."""
+    query_embedding = np.array(song_row["embedding"].iloc[0]).reshape(1, -1)
+    all_embeddings = np.stack(df["embedding"].values)
+    similarities = cosine_similarity(query_embedding, all_embeddings).flatten()
+
+    original_index = song_row.index[0]
+    all_top_indices = np.argsort(similarities)[::-1][: top_n + 5]
+    top_indices = [idx for idx in all_top_indices if idx != original_index][:top_n]
+    return df.iloc[top_indices]
+
+def get_explanation(original_item: str, recommended_item: str, item_type: str):
     cache_key = f"exp_{item_type}_{original_item}_{recommended_item}"
-    if cache_key in _cache:
-        return _cache[cache_key]
-    
-    # Create a different prompt based on the item type
-    if item_type == 'book':
-        prompt = f"You are a friendly book expert. In a detailed paragraph of 30-35 words, explain why someone who liked the book '{original_item}' would also enjoy the book '{recommended_item}'."
-    else: # Default to movie
-        prompt = f"You are a friendly movie expert. In a detailed paragraph of 30-35 words, explain why someone who liked the movie '{original_item}' would also enjoy the movie '{recommended_item}'."
-        
+    if cache_key in _cache: return _cache[cache_key]
+    prompt = f"You are a friendly expert. In about 30-35 words, explain why someone who liked the {item_type} '{original_item}' would also enjoy the {item_type} '{recommended_item}'."
     try:
         response = chat_model.generate_content(prompt)
         explanation = response.text
@@ -198,6 +188,13 @@ def get_explanation(original_item: str, recommended_item: str, item_type: str = 
         return explanation
     except Exception as e:
         return f"Could not generate explanation: {e}"
+
+# --- API SETUP & ENDPOINTS ---
+app = FastAPI()
+movie_df = load_movie_data()
+book_df = load_book_data()
+music_df = load_music_data()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 class VibeRequest(BaseModel):
     vibe_text: str
@@ -218,26 +215,48 @@ def find_movies_by_vibe(vibe_text: str, df: pd.DataFrame, top_n: int = 5):
 app = FastAPI()
 movie_df = load_movie_data()
 book_df = load_book_data()
+music_df = load_music_data()
 origins = ["*"]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # --- API ENDPOINTS ---
 @app.get("/")
 def read_root():
-    return {"message": "Welcome!"}
+    return {"message": "Welcome to the Recommender API!"}
 
-@app.get("/search/{item_type}/{query}")
-def search_items(item_type: str, query: str):
+@app.get("/search/movie/{query}")
+def search_movies_api(query: str):
     if len(query) < 3: return {"results": []}
-    if item_type == "movie":
-        df = movie_df
-    elif item_type == "book":
-        df = book_df
-    else:
-        return {"results": []}
     search_term = process_title_for_search(query)
-    matches = df[df['search_title'].str.contains(search_term, na=False)].head(7)
+    matches = movie_df[movie_df['search_title'].str.contains(search_term, na=False)].head(10)
     return {"results": matches['title'].tolist()}
+
+@app.get("/search/book/{query}")
+def search_books_api(query: str):
+    if len(query) < 3: return {"results": []}
+    search_term = process_title_for_search(query)
+    matches = book_df[book_df['search_title'].str.contains(search_term, na=False)].head(10)
+    return {"results": matches['title'].tolist()}
+# --- THIS IS THE CORRECTED FUNCTION ---
+@app.get("/search/music/{query}")
+def search_music_api(query: str):
+    if len(query) < 3: return {"results": []}
+    
+    search_term = process_title_for_search(query)
+    
+    # Search by track name
+    name_matches = music_df[music_df['search_title'].str.contains(search_term, na=False)]
+    
+    # Search by artist name
+    artist_matches = music_df[music_df['search_artist'].str.contains(search_term, na=False)]
+    
+    # Combine results and remove duplicates based on track_id
+    matches = pd.concat([name_matches, artist_matches]).drop_duplicates(subset=['track_id']).head(10)
+    
+    # Format results as "Track Name - Artist Name"
+    results = (matches['track_name'] + " - " + matches['artist_name']).tolist()
+    
+    return {"results": results}
 
 @app.get("/recommend/movie/{movie_title}")
 def get_movie_recommendations_api(movie_title: str):
@@ -255,7 +274,6 @@ def get_movie_recommendations_api(movie_title: str):
     results_df = results_df.replace({np.nan: None})
     
     top_rec_title = results_df.iloc[0]['title']
-    # --- CHANGE: Use the new unified explanation function ---
     explanation_text = get_explanation(original_title, top_rec_title, item_type='movie')
     
     recommendations_json = results_df.to_dict('records')
@@ -263,9 +281,8 @@ def get_movie_recommendations_api(movie_title: str):
 
 @app.post("/vibe")
 def find_movies_by_vibe_api(request: VibeRequest):
-    """Main endpoint for vibe-based search."""
     results_df = find_movies_by_vibe(request.vibe_text, movie_df)
-    if results_df.empty: return {"error": "Could not find any matches for that description."}
+    if results_df.empty: return {"error": "Could not find any matches."}
     
     response_df = results_df.copy()
     response_df['posterUrl'] = response_df['tmdbId'].apply(fetch_poster)
@@ -288,9 +305,112 @@ def get_book_recommendations_api(book_title: str):
     results_df['embedding'] = results_df['embedding'].apply(list)
     results_df = results_df.replace({np.nan: None})
     
-    # --- CHANGE: Use the new unified explanation function for books ---
     top_rec_title = results_df.iloc[0]['title']
     explanation_text = get_explanation(original_title, top_rec_title, item_type='book')
     
     recommendations_json = results_df.to_dict('records')
     return {"recommendations": recommendations_json, "explanation": explanation_text}
+
+@app.get("/recommend/music/{track_title}")
+def get_music_recommendations_api(track_title: str):
+    """
+    Accepts either plain track title or 'Track - Artist' string.
+    We match by normalized track_name.
+    """
+    # If in "Track - Artist" form, keep the left side for matching track title
+    normalized_input = track_title.split(" - ")[0].strip()
+    search_term = process_title_for_search(normalized_input)
+
+    original_song_df = music_df[music_df["search_title"] == search_term]
+    if original_song_df.empty:
+        return {"error": "Track not found"}
+
+    original_title = original_song_df.iloc[0]["track_name"]
+    recommendations_df = get_music_recommendations(normalized_input, music_df)
+    if recommendations_df.empty:
+        return {"error": "Could not find recommendations for this track."}
+
+    # Prepare response; keep fields the frontend uses
+    results_df = recommendations_df.copy()
+    # Provide consistent field names the UI can render
+    results_df = results_df.rename(
+        columns={"track_name": "title", "artist_name": "artist_name", "genre": "genre"}
+    )
+    results_df["embedding"] = results_df["embedding"].apply(list)
+    results_df = results_df.replace({np.nan: None})
+
+    top_rec_title = results_df.iloc[0]["title"]
+    explanation_text = get_explanation(original_title, top_rec_title, item_type="music")
+
+    return {"recommendations": results_df.to_dict("records"), "explanation": explanation_text}
+
+@app.get("/recommend/genre/movie/{genre}")
+def get_random_movies_by_genre(genre: str, limit: int = 10):
+    """Returns random movies matching the specified genre."""
+    genre_lower = genre.lower()
+    # Filter movies that contain the genre in their genres field
+    matches = movie_df[movie_df['genres'].str.lower().str.contains(genre_lower, na=False)]
+    
+    if matches.empty:
+        return {"error": f"No movies found for genre: {genre}"}
+    
+    # Sample random movies
+    sample_size = min(limit, len(matches))
+    random_movies = matches.sample(n=sample_size)
+    
+    results_df = random_movies.copy()
+    results_df['posterUrl'] = results_df['tmdbId'].apply(fetch_poster)
+    results_df['embedding'] = results_df['embedding'].apply(list)
+    results_df = results_df.replace({np.nan: None})
+    
+    explanation_text = f"Here are {sample_size} random {genre} movies from our collection."
+    
+    return {"recommendations": results_df.to_dict('records'), "explanation": explanation_text}
+
+@app.get("/recommend/genre/book/{genre}")
+def get_random_books_by_genre(genre: str, limit: int = 10):
+    """Returns random books matching the specified genre."""
+    genre_lower = genre.lower()
+    # Filter books that contain the genre in their category field
+    matches = book_df[book_df['category'].str.lower().str.contains(genre_lower, na=False)]
+    
+    if matches.empty:
+        return {"error": f"No books found for genre: {genre}"}
+    
+    # Sample random books
+    sample_size = min(limit, len(matches))
+    random_books = matches.sample(n=sample_size)
+    
+    results_df = random_books.copy()
+    results_df['coverUrl'] = results_df['isbn'].apply(fetch_book_cover)
+    results_df['embedding'] = results_df['embedding'].apply(list)
+    results_df = results_df.replace({np.nan: None})
+    
+    explanation_text = f"Here are {sample_size} random {genre} books from our collection."
+    
+    return {"recommendations": results_df.to_dict('records'), "explanation": explanation_text}
+
+@app.get("/recommend/genre/music/{genre}")
+def get_random_music_by_genre(genre: str, limit: int = 10):
+    """Returns random music tracks matching the specified genre."""
+    genre_lower = genre.lower()
+    # Filter music that contains the genre
+    matches = music_df[music_df['genre'].str.lower().str.contains(genre_lower, na=False)]
+    
+    if matches.empty:
+        return {"error": f"No music found for genre: {genre}"}
+    
+    # Sample random tracks
+    sample_size = min(limit, len(matches))
+    random_tracks = matches.sample(n=sample_size)
+    
+    results_df = random_tracks.copy()
+    results_df = results_df.rename(
+        columns={"track_name": "title", "artist_name": "artist_name", "genre": "genre"}
+    )
+    results_df['embedding'] = results_df['embedding'].apply(list)
+    results_df = results_df.replace({np.nan: None})
+    
+    explanation_text = f"Here are {sample_size} random {genre} tracks from our collection."
+    
+    return {"recommendations": results_df.to_dict('records'), "explanation": explanation_text}
