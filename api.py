@@ -11,6 +11,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import re
+from pymongo import MongoClient
+from bson.objectid import ObjectId
+import jwt
 
 # --- CONFIGURATION ---
 load_dotenv()
@@ -19,28 +22,38 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 GOOGLE_BOOKS_API_KEY = os.getenv("GOOGLE_BOOKS_API_KEY")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+
+MONGO_URI = os.getenv("MONGO_URI")
+JWT_SECRET = os.getenv("JWT_SECRET") # Assuming JWT_SECRET is in your main .env
+client = MongoClient(MONGO_URI)
+db = client.recommenderDB
+users_collection = db.users
 # --- CACHING ---
 _cache = {}
-
 
 # --- HELPER FUNCTIONS: DATA PROCESSING ---
 def process_title_for_search(title: str):
     if not isinstance(title, str): return ""
-    processed_title = re.sub(r'\s*\([^)]*\)\s*$', '', title).strip()
+    processed_title = re.sub(r'\s*$$[^)]*$$\s*$', '', title).strip()
     if processed_title.endswith(', The'): processed_title = 'The ' + processed_title[:-5]
     if processed_title.endswith(', A'): processed_title = 'A ' + processed_title[:-3]
     if processed_title.endswith(', An'): processed_title = 'An ' + processed_title[:-4]
     processed_title = re.sub(r'^(the|a|an)\s+', '', processed_title, flags=re.IGNORECASE)
     return re.sub(r'[^a-zA-Z0-9]', '', processed_title).lower()
-
+# --- THIS IS THE CORRECTED FUNCTION ---
 def load_movie_data():
-    """Loads all movie data files, including custom additions, and merges them intelligently."""
+    """Loads all movie data files intelligently to prevent column conflicts."""
     if "movies" in _cache: return _cache["movies"]
     
-    embeddings_df = pd.read_parquet("data/movie_embeddings.parquet")
+    # Load the main embeddings file, which has our primary title list
+    embeddings_df = pd.read_parquet("data/movie_embeddings.parquet", engine='fastparquet')
+# ... and so on for other pd.read_parquet()
+    
+    # From the other files, ONLY load the columns we need to avoid name conflicts
     movies_genres_df = pd.read_csv("data/movies.csv")[['movieId', 'genres']]
     links_df = pd.read_csv("data/links.csv")[['movieId', 'tmdbId']]
     
+    # Merge the dataframes
     merged_df = pd.merge(embeddings_df, movies_genres_df, on='movieId', how='inner')
     final_df = pd.merge(merged_df, links_df, on='movieId', how='inner')
     
@@ -70,6 +83,7 @@ def load_book_data():
     _cache["books"] = df
     print("Book data loaded and cached.")
     return df
+
 def load_music_data():
     if "music" in _cache: return _cache["music"]
     df = pd.read_parquet("data/music_embeddings.parquet")
@@ -79,7 +93,6 @@ def load_music_data():
     _cache["music"] = df
     print("Music data loaded.")
     return df
-
 
 # --- HELPER FUNCTIONS: EXTERNAL APIS ---
 
@@ -127,7 +140,7 @@ def fetch_book_cover(isbn: str):
     return "https://via.placeholder.com/500x750.png?text=No+Cover+Found"
 
 # --- HELPER FUNCTIONS: RECOMMENDATION LOGIC ---
-chat_model = genai.GenerativeModel('gemini-1.5-flash-latest')
+chat_model = genai.GenerativeModel('gemini-pro')
 
 def get_movie_recommendations(title: str, df: pd.DataFrame, top_n: int = 5):
     """Finds movies similar to a given title."""
@@ -160,6 +173,12 @@ def get_book_recommendations(title: str, df: pd.DataFrame, top_n: int = 5):
     all_top_indices = np.argsort(similarities)[::-1][:top_n + 5]
     top_indices = [idx for idx in all_top_indices if idx != original_book_index][:top_n]
     return df.iloc[top_indices]
+# --- API SETUP & ENDPOINTS ---
+app = FastAPI()
+movie_df = load_movie_data()
+book_df = load_book_data()
+music_df = load_music_data()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 def get_music_recommendations(track_title: str, df: pd.DataFrame, top_n: int = 5):
     """Finds songs similar to a given track using precomputed embeddings."""
@@ -189,12 +208,223 @@ def get_explanation(original_item: str, recommended_item: str, item_type: str):
     except Exception as e:
         return f"Could not generate explanation: {e}"
 
-# --- API SETUP & ENDPOINTS ---
-app = FastAPI()
-movie_df = load_movie_data()
-book_df = load_book_data()
-music_df = load_music_data()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+# --- Collaborative Filtering (optional Surprise) ---
+try:
+    from surprise import Dataset as _SurpriseDataset, Reader as _SurpriseReader, SVD as _SurpriseSVD
+    _SURPRISE_AVAILABLE = True
+except Exception:
+    _SURPRISE_AVAILABLE = False
+    _SurpriseDataset = _SurpriseReader = _SurpriseSVD = None
+
+_collaborative_model = None
+
+def _get_user_favorites(user_doc):
+    """Normalize favorites entries; returns list of dicts with keys: type, itemId."""
+    out = []
+    for fav in user_doc.get('favorites', []):
+        out.append({
+            "type": fav.get("type") or fav.get("itemType"),
+            "itemId": str(fav.get("itemId") or ""),
+        })
+    return out
+
+def train_collaborative_model():
+    """Train a simple SVD model from user favorites if Surprise is available."""
+    global _collaborative_model
+    if not _SURPRISE_AVAILABLE:
+        print("Surprise not available; skipping collaborative model training.")
+        _collaborative_model = None
+        return
+    try:
+        all_users = list(users_collection.find({}, {"_id": 1, "favorites": 1}))
+        ratings = []
+        for u in all_users:
+            uid = str(u["_id"])
+            for fav in _get_user_favorites(u):
+                if fav["type"] == "movie" and fav["itemId"]:
+                    ratings.append({"userID": uid, "itemID": fav["itemId"], "rating": 1.0})
+        if len(ratings) < 10:
+            print("Not enough data to train collaborative model.")
+            _collaborative_model = None
+            return
+        ratings_df = pd.DataFrame(ratings)
+        reader = _SurpriseReader(rating_scale=(1, 1))
+        data = _SurpriseDataset.load_from_df(ratings_df[['userID', 'itemID', 'rating']], reader)
+        trainset = data.build_full_trainset()
+        algo = _SurpriseSVD()
+        algo.fit(trainset)
+        _collaborative_model = algo
+        print("Collaborative model trained.")
+    except Exception as e:
+        print(f"Collaborative training failed: {e}")
+        _collaborative_model = None
+
+def get_collaborative_recs(user_id: str, top_n: int = 10):
+    """Get movie recommendations from collaborative model. Returns movie_df subset."""
+    if not _collaborative_model:
+        return movie_df.iloc[0:0]
+    try:
+        # All candidate movie ids (as strings)
+        all_movie_ids = movie_df['tmdbId'].astype(str).unique()
+        user = users_collection.find_one({"_id": ObjectId(user_id)}) or {}
+        seen = {str(f.get('itemId')) for f in _get_user_favorites(user) if (f.get('type') == 'movie')}
+        preds = []
+        for mid in all_movie_ids:
+            if mid not in seen:
+                est = _collaborative_model.predict(str(user_id), mid).est
+                preds.append((mid, est))
+        preds.sort(key=lambda x: x[1], reverse=True)
+        top_ids = [int(mid) for (mid, _) in preds[:top_n]]
+        return movie_df[movie_df['tmdbId'].isin(top_ids)]
+    except Exception:
+        return movie_df.iloc[0:0]
+
+# Train collaborative model on startup (if FastAPI supports events in env)
+try:
+    @app.on_event("startup")
+    def _startup_train_collab():
+        train_collaborative_model()
+except Exception:
+    # If 'app' not yet defined at import time, ignore (already defined above)
+    pass
+
+# --- Helper: content-based taste-profile per category ---
+def _taste_profile_recs_for_category(user_id: str, cat: str, top_k: int = 50):
+    user = users_collection.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        return pd.DataFrame()
+
+    favs = _get_user_favorites(user)
+    if cat == "movie":
+        ids = [f["itemId"] for f in favs if f["type"] == "movie" and f["itemId"]]
+        if not ids:
+            return pd.DataFrame()
+        emb_list = movie_df[movie_df["tmdbId"].isin(pd.Series(ids).dropna().astype(int))]["embedding"].tolist()
+        if not emb_list:
+            return pd.DataFrame()
+        profile = np.mean(np.array(emb_list), axis=0).reshape(1, -1)
+        sims = cosine_similarity(profile, np.stack(movie_df["embedding"].values)).flatten()
+        idx = np.argsort(sims)[::-1][:top_k]
+        # Exclude already-favorited
+        seen = set(map(str, ids))
+        kept = [i for i in idx if str(movie_df.iloc[i]["tmdbId"]) not in seen]
+        return movie_df.iloc[kept]
+    elif cat == "book":
+        ids = [f["itemId"] for f in favs if f["type"] == "book" and f["itemId"]]
+        if not ids:
+            return pd.DataFrame()
+        # ISBN is string; embeddings exist in book_df
+        emb_list = book_df[book_df["isbn"].isin(ids)]["embedding"].tolist()
+        if not emb_list:
+            return pd.DataFrame()
+        profile = np.mean(np.array(emb_list), axis=0).reshape(1, -1)
+        sims = cosine_similarity(profile, np.stack(book_df["embedding"].values)).flatten()
+        idx = np.argsort(sims)[::-1][:top_k]
+        kept = [i for i in idx if str(book_df.iloc[i]["isbn"]) not in set(ids)]
+        return book_df.iloc[kept]
+    else:  # music
+        ids = [f["itemId"] for f in favs if f["type"] == "music" and f["itemId"]]
+        if not ids:
+            return pd.DataFrame()
+        emb_list = music_df[music_df["track_id"].isin(ids)]["embedding"].tolist()
+        if not emb_list:
+            return pd.DataFrame()
+        profile = np.mean(np.array(emb_list), axis=0).reshape(1, -1)
+        sims = cosine_similarity(profile, np.stack(music_df["embedding"].values)).flatten()
+        idx = np.argsort(sims)[::-1][:top_k]
+        kept = [i for i in idx if str(music_df.iloc[i]["track_id"]) not in set(ids)]
+        return music_df.iloc[kept]
+
+# --- For-You endpoints per category ---
+@app.get("/recommend/for-you/book")
+def get_for_you_books(token: str):
+    try:
+        decoded = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        user_id = decoded['user']['id']
+        df = _taste_profile_recs_for_category(user_id, "book").head(5)
+        if df.empty:
+            return {"error": "No book recommendations available. Add more favorite books."}
+        res = df.copy()
+        res['coverUrl'] = res['isbn'].apply(fetch_book_cover)
+        res = res.replace({np.nan: None})
+        return {"recommendations": res.to_dict('records')}
+    except Exception as e:
+        return {"error": f"An error occurred: {str(e)}"}
+
+@app.get("/recommend/for-you/music")
+def get_for_you_music(token: str):
+    try:
+        decoded = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        user_id = decoded['user']['id']
+        df = _taste_profile_recs_for_category(user_id, "music").head(5)
+        if df.empty:
+            return {"error": "No music recommendations available. Add more favorite tracks."}
+        res = df.copy().rename(columns={"track_name": "title"})
+        res["embedding"] = res["embedding"].apply(list)
+        res = res.replace({np.nan: None})
+        return {"recommendations": res.to_dict('records')}
+    except Exception as e:
+        return {"error": f"An error occurred: {str(e)}"}
+
+# --- Hybrid endpoint (content-based + collaborative for movies) ---
+@app.get("/recommend/for-you/hybrid")
+def get_hybrid_for_you_recommendations(token: str):
+    try:
+        decoded = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        user_id = decoded['user']['id']
+
+        content_recs = _taste_profile_recs_for_category(user_id, "movie").head(20)
+        collab_recs = get_collaborative_recs(user_id, top_n=20)
+
+        if content_recs.empty and (collab_recs is None or collab_recs.empty):
+            return {"error": "Could not generate recommendations. Add more favorites!"}
+
+        # Combine, drop duplicates by tmdbId, take top 10, then attach posters
+        hybrid = pd.concat([content_recs, collab_recs]).drop_duplicates(subset=['tmdbId']).head(10)
+        res = hybrid.copy()
+        res['posterUrl'] = res['tmdbId'].apply(fetch_poster)
+        res = res.replace({np.nan: None})
+        return {"recommendations": res.to_dict('records')}
+    except Exception as e:
+        return {"error": f"An error occurred: {str(e)}"}
+
+# --- Random-from-favorites endpoint (per category) ---
+@app.get("/recommend/favorites/random/{category}")
+def get_random_from_favorites(category: str, token: str, limit: int = 10):
+    """
+    Samples random picks from the top-N nearest items to the user's taste profile for the given category.
+    """
+    try:
+        decoded = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        user_id = decoded['user']['id']
+        cat = category.lower()
+        if cat not in ("movie", "book", "music"):
+            return {"error": "Invalid category."}
+        df = _taste_profile_recs_for_category(user_id, cat).head(100)  # wider pool
+        if df.empty:
+            return {"error": f"No {cat} recommendations available yet."}
+
+        sample_n = min(limit, len(df))
+        sampled = df.sample(n=sample_n, random_state=np.random.randint(0, 1_000_000))
+        if cat == "movie":
+            sampled = sampled.copy()
+            sampled['posterUrl'] = sampled['tmdbId'].apply(fetch_poster)
+            sampled = sampled.replace({np.nan: None})
+            return {"recommendations": sampled.to_dict('records')}
+        if cat == "book":
+            sampled = sampled.copy()
+            sampled['coverUrl'] = sampled['isbn'].apply(fetch_book_cover)
+            sampled = sampled.replace({np.nan: None})
+            return {"recommendations": sampled.to_dict('records')}
+        # music
+        sampled = sampled.copy().rename(columns={"track_name": "title"})
+        sampled["embedding"] = sampled["embedding"].apply(list)
+        sampled = sampled.replace({np.nan: None})
+        return {"recommendations": sampled.to_dict('records')}
+    except Exception as e:
+        return {"error": f"An error occurred: {str(e)}"}
+
+
 
 class VibeRequest(BaseModel):
     vibe_text: str
@@ -211,13 +441,6 @@ def find_movies_by_vibe(vibe_text: str, df: pd.DataFrame, top_n: int = 5):
     top_indices = np.argsort(similarities)[::-1][:top_n]
     return df.iloc[top_indices]
 
-# --- API SETUP ---
-app = FastAPI()
-movie_df = load_movie_data()
-book_df = load_book_data()
-music_df = load_music_data()
-origins = ["*"]
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # --- API ENDPOINTS ---
 @app.get("/")
@@ -237,7 +460,7 @@ def search_books_api(query: str):
     search_term = process_title_for_search(query)
     matches = book_df[book_df['search_title'].str.contains(search_term, na=False)].head(10)
     return {"results": matches['title'].tolist()}
-# --- THIS IS THE CORRECTED FUNCTION ---
+
 @app.get("/search/music/{query}")
 def search_music_api(query: str):
     if len(query) < 3: return {"results": []}
@@ -414,3 +637,54 @@ def get_random_music_by_genre(genre: str, limit: int = 10):
     explanation_text = f"Here are {sample_size} random {genre} tracks from our collection."
     
     return {"recommendations": results_df.to_dict('records'), "explanation": explanation_text}
+
+# --- NEW: "FOR YOU" RECOMMENDATION ENDPOINT ---
+@app.get("/recommend/for-you")
+def get_for_you_recommendations(token: str):
+    """Generates personalized recommendations based on a user's favorites."""
+    try:
+        # 1. Decode the token to get the user's ID
+        decoded = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        user_id = decoded['user']['id']
+        
+        # 2. Get the user's favorites from the database
+        user = users_collection.find_one({"_id": ObjectId(user_id)})
+        if not user or not user.get('favorites'):
+            return {"error": "No favorites found to generate recommendations."}
+
+        # 3. Get the embeddings for their favorite movies
+        favorite_movie_ids = [
+            fav.get('itemId')
+            for fav in user.get('favorites', [])
+            if (fav.get('type') or fav.get('itemType')) == 'movie'
+        ]
+
+        favorite_embeddings = movie_df[movie_df['tmdbId'].isin(pd.Series(favorite_movie_ids).dropna().astype(int))]['embedding'].tolist()
+        if not favorite_embeddings:
+            return {"error": "No favorite movies with embeddings found."}
+
+        # 4. Calculate the user's "Taste Profile"
+        taste_profile = np.mean(np.array(favorite_embeddings), axis=0).reshape(1, -1)
+        all_embeddings = np.stack(movie_df['embedding'].values)
+        similarities = cosine_similarity(taste_profile, all_embeddings).flatten()
+
+        # Get top 20 results (to have more options after filtering)
+        top_indices = np.argsort(similarities)[::-1][:20]
+        
+        # Filter out movies the user has already favorited
+        recommended_indices = [idx for idx in top_indices if str(movie_df.iloc[idx]['tmdbId']) not in set(map(str, favorite_movie_ids))]
+        
+        # Get the final top 5
+        final_recommendations = movie_df.iloc[recommended_indices].head(5)
+
+        # 5. Prepare and return the response
+        results_df = final_recommendations.copy()
+        results_df['posterUrl'] = results_df['tmdbId'].apply(fetch_poster)
+        results_df = results_df.replace({np.nan: None})
+        
+        return {"recommendations": results_df.to_dict('records')}
+
+    except jwt.ExpiredSignatureError:
+        return {"error": "Session expired. Please log in again."}
+    except Exception as e:
+        return {"error": f"An error occurred: {str(e)}"}

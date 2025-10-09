@@ -1,6 +1,9 @@
 // Favorites Page JavaScript
 
 const AUTH_API_BASE = (window.AUTH_API_BASE || "http://localhost:8081").replace(/\/$/, "")
+const DEFAULT_API_BASE = "http://127.0.0.1:8001"
+const RAW_API_BASE = (typeof window !== "undefined" && window.API_BASE) || ""
+const API_BASE = /^https?:\/\//.test(RAW_API_BASE) ? RAW_API_BASE.replace(/\/$/, "") : DEFAULT_API_BASE
 
 function getAuthToken() {
   try {
@@ -281,12 +284,190 @@ style.textContent = `
 `
 document.head.appendChild(style)
 
+// Helper to build simple recommendation cards in favorites page
+function createPersonalizedCard(rec, type) {
+  const card = document.createElement("div")
+  card.className = "personalized-card"
+
+  let mediaUrl = ""
+  let title = ""
+  let sub = ""
+
+  if (type === "movie") {
+    title = rec.title || "Untitled"
+    mediaUrl = rec.posterUrl || ""
+    sub = rec.genres || ""
+  } else if (type === "book") {
+    title = rec.title || "Untitled"
+    mediaUrl = rec.coverUrl || ""
+    sub = rec.authors || rec.category || ""
+  } else if (type === "music") {
+    // API returns 'title' (renamed from track_name)
+    title = rec.title || rec.track_name || "Untitled"
+    mediaUrl = "" // music doesn't have cover images
+    sub = [rec.artist_name, rec.genre].filter(Boolean).join(" • ")
+  }
+
+  const icon = type === "movie" ? "fa-film" : type === "book" ? "fa-book" : "fa-music"
+
+  card.innerHTML = `
+    <div class="personalized-media" style="${mediaUrl ? `background-image:url('${mediaUrl}')` : ""}">
+      ${!mediaUrl ? `<i class="fas ${icon}"></i>` : ""}
+    </div>
+    <div class="personalized-body">
+      <div class="personalized-title">${title}</div>
+      <div class="personalized-sub">${sub || "AI-picked just for you"}</div>
+      <button class="add-fav-btn"><i class="fas fa-heart"></i> Add to Favorites</button>
+    </div>
+  `
+
+  card.querySelector(".add-fav-btn").addEventListener("click", async (e) => {
+    e.stopPropagation()
+    const token = getAuthToken()
+    if (!token) {
+      window.location.href = "login.html"
+      return
+    }
+
+    // Extract the correct itemId based on type
+    let itemId = ""
+    if (type === "movie") {
+      itemId = String(rec.tmdbId || "")
+    } else if (type === "book") {
+      itemId = String(rec.isbn || "")
+    } else if (type === "music") {
+      itemId = String(rec.track_id || "")
+    }
+
+    if (!itemId) {
+      console.error("[Favorites] No valid itemId found for:", rec)
+      showToast("Failed to add to favorites", true)
+      return
+    }
+
+    try {
+      const res = await fetch(`${AUTH_API_BASE}/api/auth/favorites`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          itemType: type,
+          itemId: itemId,
+          title: title,
+          posterUrl: mediaUrl || "",
+        }),
+      })
+      if (res.ok) {
+        showToast("Added to favorites!")
+        // Update the button to show it's added
+        e.target.innerHTML = '<i class="fas fa-check"></i> Added!'
+        e.target.disabled = true
+        e.target.style.opacity = "0.6"
+      } else {
+        const errorData = await res.json()
+        console.error("[Favorites] Add failed:", errorData)
+        showToast("Failed to add to favorites", true)
+      }
+    } catch (err) {
+      console.error("[Favorites] quick add failed:", err)
+      showToast("Failed to add to favorites", true)
+    }
+  })
+
+  return card
+}
+
 // Filter favorites
 document.querySelectorAll(".filter-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".filter-btn").forEach((b) => b.classList.remove("active"))
     btn.classList.add("active")
     loadFavorites(btn.dataset.filter)
+
+    const container = document.getElementById("personalizedResults")
+    if (container) container.style.display = "none"
+  })
+})
+
+// Click handler for Personalized Picks
+document.addEventListener("DOMContentLoaded", () => {
+  const btn = document.getElementById("personalizedBtn")
+  const container = document.getElementById("personalizedResults")
+  if (!btn || !container) return
+
+  btn.addEventListener("click", async () => {
+    const token = getAuthToken()
+    if (!token) {
+      window.location.href = "login.html"
+      return
+    }
+
+    // Get current filter; default to movies
+    let active = document.querySelector(".filter-btn.active")?.dataset.filter || "movie"
+    if (active === "all") active = "movie"
+
+    container.style.display = "grid"
+    container.innerHTML = `
+      <div class="personalized-card" style="grid-column: 1/-1; text-align:center; padding:20px;">
+        <i class="fas fa-spinner fa-spin" style="font-size: 1.5rem; color: rgba(78,205,196,0.9)"></i>
+        <div style="margin-top:8px;color:rgba(226,232,240,0.75)">Curating personalized ${active} picks...</div>
+      </div>
+    `
+
+    try {
+      const res = await fetch(`${API_BASE}/recommend/favorites/random/${active}?token=${encodeURIComponent(token)}`)
+
+      if (!res.ok) {
+        throw new Error(`HTTP error! status: ${res.status}`)
+      }
+
+      const data = await res.json()
+
+      if (data.error) {
+        container.innerHTML = `
+          <div style="grid-column:1/-1; color: rgba(226,232,240,0.8); padding: 20px; text-align: center;">
+            <i class="fas fa-info-circle" style="font-size: 2rem; margin-bottom: 10px;"></i>
+            <p>${data.error}</p>
+            <p style="margin-top: 10px; font-size: 0.9rem; opacity: 0.7;">Add more ${active}s to your favorites to get personalized recommendations!</p>
+          </div>
+        `
+        return
+      }
+
+      const recs = data.recommendations || []
+
+      if (recs.length === 0) {
+        container.innerHTML = `
+          <div style="grid-column:1/-1; color: rgba(226,232,240,0.8); padding: 20px; text-align: center;">
+            <i class="fas fa-heart-broken" style="font-size: 2rem; margin-bottom: 10px;"></i>
+            <p>No recommendations available yet.</p>
+            <p style="margin-top: 10px; font-size: 0.9rem; opacity: 0.7;">Add more ${active}s to your favorites first!</p>
+          </div>
+        `
+        return
+      }
+
+      container.innerHTML = ""
+      recs.forEach((rec) => {
+        try {
+          const card = createPersonalizedCard(rec, active)
+          container.appendChild(card)
+        } catch (err) {
+          console.error("[Favorites] Failed to create card for:", rec, err)
+        }
+      })
+    } catch (e) {
+      console.error("[Favorites] personalized picks error:", e)
+      container.innerHTML = `
+        <div style="grid-column:1/-1; color: rgba(226,232,240,0.8); padding: 20px; text-align: center;">
+          <i class="fas fa-exclamation-triangle" style="font-size: 2rem; margin-bottom: 10px;"></i>
+          <p>Failed to load recommendations.</p>
+          <p style="margin-top: 10px; font-size: 0.9rem; opacity: 0.7;">Please try again later.</p>
+        </div>
+      `
+    }
   })
 })
 
