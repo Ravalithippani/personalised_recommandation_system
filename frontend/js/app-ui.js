@@ -49,6 +49,7 @@ function updateHeaderForUser() {
   if (user && navLinks) {
     navLinks.innerHTML = `
       <a href="index.html" class="nav-link active">Home</a>
+      <a href="favorites.html" class="nav-link">Favorites</a>
       <div class="user-profile-nav" style="display: flex; align-items: center; gap: 12px;">
         <span style="color: rgba(226, 232, 240, 0.8); font-size: 0.95rem;">Hi, ${user.name || user.email}</span>
         <a href="profile.html" class="nav-link" style="display: flex; align-items: center; gap: 6px;">
@@ -379,25 +380,15 @@ function createSuggestionsEl() {
   const el = document.createElement("div")
   el.id = "searchSuggestions"
   el.className = "search-suggestions"
-  const wrapper = searchInput.parentElement || document.body
-  wrapper.style.position = wrapper.style.position || "relative"
   Object.assign(el.style, {
-    position: "absolute",
-    top: "100%",
-    left: "0",
-    right: "0",
-    zIndex: "9999",
-    background: "rgba(15,23,42,0.95)",
-    border: "1px solid rgba(78,205,196,0.2)",
-    borderRadius: "8px",
-    backdropFilter: "blur(6px)",
+    position: "fixed",
+    zIndex: "10002", // ensure above any other UI
+    left: "0px",
+    top: "0px",
+    width: "0px",
     display: "none",
-    padding: "6px",
-    marginTop: "6px",
-    maxHeight: "240px",
-    overflowY: "auto",
   })
-  wrapper.appendChild(el)
+  document.body.appendChild(el)
   return el
 }
 
@@ -425,9 +416,21 @@ function highlightSuggestion(index) {
   })
 }
 
+// Helper to position the floating suggestions under the search input
+function positionSuggestionsEl() {
+  const el = getSuggestionsEl()
+  if (!el || !searchInput) return
+  const rect = searchInput.getBoundingClientRect()
+  // 8px gap to match styles.css
+  el.style.left = `${Math.round(rect.left)}px`
+  el.style.top = `${Math.round(rect.bottom + 8)}px`
+  el.style.width = `${Math.round(rect.width)}px`
+}
+
 // Search functionality
 async function showSearchSuggestions(query) {
   const suggestionsEl = document.getElementById("searchSuggestions") || createSuggestionsEl()
+  positionSuggestionsEl()
   const makeUrl = (base) => `${base}/search/${categoryToPath(activeCategory)}/${encodeURIComponent(query)}`
   const endpoint = makeUrl(API_BASE)
 
@@ -456,6 +459,7 @@ async function showSearchSuggestions(query) {
           `<button type="button" class="suggestion-item" style="display:block;width:100%;text-align:left;padding:8px 10px;border-radius:6px;border:none;background:transparent;color:#e2e8f0;cursor:pointer;">${txt}</button>`,
       )
       .join("")
+    positionSuggestionsEl()
     suggestionsEl.style.display = "block"
     selectedSuggestionIndex = -1
     suggestionsEl.querySelectorAll(".suggestion-item").forEach((btn) => {
@@ -464,12 +468,8 @@ async function showSearchSuggestions(query) {
         hideSearchSuggestions()
         recommendBtn.click()
       }
-      btn.onmouseenter = () => {
-        btn.style.background = "rgba(78,205,196,0.12)"
-      }
-      btn.onmouseleave = () => {
-        btn.style.background = "transparent"
-      }
+      btn.onmouseenter = () => (btn.style.background = "rgba(78,205,196,0.12)")
+      btn.onmouseleave = () => (btn.style.background = "transparent")
     })
   } catch (e) {
     console.error("[ORO] suggestions error:", e)
@@ -934,3 +934,19 @@ document.addEventListener("visibilitychange", () => {
 
 // Map category to correct API path (fixes music -> musi bug)
 const categoryToPath = (cat) => (cat === "movies" ? "movie" : cat === "books" ? "book" : "music")
+
+// Keep dropdown aligned on focus/resize/scroll while visible
+searchInput.addEventListener("focus", () => {
+  const el = getSuggestionsEl()
+  if (el && el.style.display !== "none") positionSuggestionsEl()
+})
+
+window.addEventListener("resize", () => {
+  const el = getSuggestionsEl()
+  if (el && el.style.display !== "none") positionSuggestionsEl()
+})
+
+window.addEventListener("scroll", () => {
+  const el = getSuggestionsEl()
+  if (el && el.style.display !== "none") positionSuggestionsEl()
+})

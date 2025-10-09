@@ -459,7 +459,7 @@ body {
   top: calc(100% + 8px);
   left: 0;
   right: 0;
-  z-index: 10000;
+  z-index: 10002; /* ensure suggestions overlay sits above genre search and buttons */
   background: rgba(15, 23, 42, 0.98);
   border: 1px solid rgba(78, 205, 196, 0.3);
   border-radius: 16px;
