@@ -1,26 +1,27 @@
-pandas
-numpy
-scikit-learn
-google-generativeai
-streamlit
-python-dotenv
-tqdm
-flask
-pymongo
-passlib
-pandas
-numpy
-scikit-learn
-google-generativeai
-streamlit
-python-dotenv
-tqdm
-flask
-pymongo
-passlib
-fastapi
-uvicorn
-PyJWT
-scikit-surprise
-wheel
-cython
+# Core data processing
+pandas==2.2.2  # Stable with Python 3.11+
+numpy==1.26.4  # Compatible with Python 3.11+
+
+# Machine learning
+scikit-learn==1.5.1  # Works with Python 3.11+
+scikit-surprise==1.1.3  # Older version to avoid Python 3.13 Cython issues
+
+# AI and API
+google-generativeai==0.8.5  # For Gemini integration
+fastapi==0.118.2  # Web framework
+uvicorn==0.37.0  # ASGI server
+PyJWT==2.10.1  # For JWT authentication
+
+# Database
+pymongo==4.15.3  # MongoDB driver
+
+# Utilities
+python-dotenv==1.1.1  # Load .env files
+tqdm==4.67.1  # Progress bars
+passlib==1.7.4  # Password hashing
+google-cloud-storage==2.17.0  # For GCS integration
+gunicorn==23.0.0  # Production WSGI server
+
+# Build tools
+wheel==0.44.0  # For building wheels
+cython==3.0.11  # For scikit-surprise compilation
