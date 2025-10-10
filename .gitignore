@@ -39,3 +39,4 @@ venv/
 *.env
 secrets.toml
 node_modules/
+*.log
