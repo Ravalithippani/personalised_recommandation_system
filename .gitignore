@@ -38,3 +38,4 @@ venv/
 # Secrets - VERY IMPORTANT
 *.env
 secrets.toml
+node_modules/
