@@ -14,11 +14,16 @@ import re
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 import jwt
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+
 
 # --- CONFIGURATION ---
 load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-TMDB_API_KEY = os.getenv("TMDB_API_KEY")
+
+# RENAMED to reflect it's the OMDb key
+OMDB_API_KEY = os.environ.get("OMDB_API_KEY") 
 GOOGLE_BOOKS_API_KEY = os.getenv("GOOGLE_BOOKS_API_KEY")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
@@ -46,16 +51,16 @@ def load_movie_data():
     if "movies" in _cache: return _cache["movies"]
     
     # Load the main embeddings file, which has our primary title list
-    embeddings_df = pd.read_parquet("data/movie_embeddings.parquet", engine='fastparquet')
+    embeddings_df = pd.read_parquet("data/movie_embeddings.parquet")
 # ... and so on for other pd.read_parquet()
     
     # From the other files, ONLY load the columns we need to avoid name conflicts
     movies_genres_df = pd.read_csv("data/movies.csv")[['movieId', 'genres']]
-    links_df = pd.read_csv("data/links.csv")[['movieId', 'tmdbId']]
+    links_df = pd.read_csv("data/links.csv")[['movieId', 'imdbId', 'tmdbId']]
     
     # Merge the dataframes
     merged_df = pd.merge(embeddings_df, movies_genres_df, on='movieId', how='inner')
-    final_df = pd.merge(merged_df, links_df, on='movieId', how='inner')
+    final_df = pd.merge(merged_df, links_df, on='movieId', how='inner') # Keeping tmdbId as a unique identifier
     
     try:
         custom_embeddings_df = pd.read_parquet("data/custom_embeddings.parquet")
@@ -93,30 +98,58 @@ def load_music_data():
     _cache["music"] = df
     print("Music data loaded.")
     return df
-
-# --- HELPER FUNCTIONS: EXTERNAL APIS ---
-
+# --- TEMPORARY DEBUGGING VERSION of fetch_poster ---
 def fetch_poster(tmdb_id: int):
-    """Fetches a movie poster URL from TMDb, with caching and retries."""
-    if tmdb_id in _cache: return _cache[tmdb_id]
-    
+    """
+    Fetches a movie poster URL reliably from OMDb using the movie's unique IMDb ID.
+    """
+    # --- DEBUG PRINT 1: Check if the API key loaded ---
+    print(f"OMDb API Key Loaded: {OMDB_API_KEY}")
+
+    if tmdb_id in _cache:
+        return _cache[tmdb_id]
+
+    try:
+        # Get the IMDb ID from the movie_df, ensuring it's the first match
+        imdb_id = movie_df[movie_df['tmdbId'] == tmdb_id]['imdbId'].iloc[0]
+        
+        # Convert to string and format as 'ttXXXXXXX' (pad with zeros to 7 digits)
+        imdb_id_str = str(int(float(str(imdb_id))))  # Handle potential float or string issues
+        imdb_id_formatted = f"tt{imdb_id_str.zfill(7)}"
+    except (IndexError, ValueError) as e:
+        print(f"IMDb ID not found or invalid for tmdbId {tmdb_id}: {e}")
+        return "https://via.placeholder.com/500x750.png?text=No+Poster+Found"
+
     retry_strategy = Retry(total=3, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
     adapter = HTTPAdapter(max_retries=retry_strategy)
     session = requests.Session()
-    session.mount("https://", adapter); session.mount("http://", adapter)
-    url = f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={TMDB_API_KEY}&language=en-US"
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    
+    base_url = "https://www.omdbapi.com/"
+    url = f"{base_url}?i={imdb_id_formatted}&apikey={OMDB_API_KEY}"
+    
+    # --- DEBUG PRINT 2: Check the final URL being called ---
+    print(f"Requesting URL: {url}")
     
     try:
         response = session.get(url)
         response.raise_for_status()
         data = response.json()
-        poster_path = data.get('poster_path')
-        if poster_path:
-            full_url = f"https://image.tmdb.org/t/p/w500/{poster_path}"
-            _cache[tmdb_id] = full_url
-            return full_url
+
+        # --- DEBUG PRINT 3: See the exact response from OMDb ---
+        print(f"OMDb Response for {imdb_id_formatted}: {data}")
+        
+        poster_path = data.get('Poster')
+        
+        if data.get('Response') == 'True' and poster_path and poster_path != 'N/A':
+            _cache[tmdb_id] = poster_path
+            return poster_path
+        else:
+            print(f"OMDb found no poster. Reason: {data.get('Error')}")
+            
     except requests.exceptions.RequestException as e:
-        print(f"API request failed for tmdbId {tmdb_id}: {e}")
+        print(f"OMDb API request failed for IMDb ID {imdb_id_formatted}: {e}")
         
     return "https://via.placeholder.com/500x750.png?text=No+Poster+Found"
 
@@ -178,7 +211,52 @@ app = FastAPI()
 movie_df = load_movie_data()
 book_df = load_book_data()
 music_df = load_music_data()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # This allows all origins (not recommended for production)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+# New endpoint for Google Sign-In
+@app.post("/api/auth/google")
+async def google_auth(token: dict):
+    try:
+        # Verify the Google ID token
+        id_info = id_token.verify_oauth2_token(
+            token["token"], google_requests.Request(), os.getenv("GOOGLE_CLIENT_ID")
+        )
+        email = id_info["email"]
+        name = id_info.get("name", email.split("@")[0])
+        picture = id_info.get("picture")
+
+        # Check if user exists in MongoDB
+        user = users_collection.find_one({"email": email})
+        if not user:
+            # Create new user
+            user_id = str(ObjectId())
+            new_user = {
+                "email": email,
+                "name": name,
+                "avatar": picture,
+                "favorites": [],
+                "_id": ObjectId(user_id)
+            }
+            users_collection.insert_one(new_user)
+        else:
+            user_id = str(user["_id"])
+
+        # Generate JWT
+        payload = {"user": {"id": user_id}}
+        jwt_token = jwt.encode(payload, os.getenv("JWT_SECRET"), algorithm="HS256")
+
+        return {"token": jwt_token, "user": {"id": user_id, "name": name, "email": email}}
+    except ValueError as e:
+        print(f"Google token verification failed: {e}")
+        return {"error": "Invalid Google token"}, 401
+    except Exception as e:
+        print(f"Authentication error: {e}")
+        return {"error": "Authentication failed"}, 500
 
 def get_music_recommendations(track_title: str, df: pd.DataFrame, top_n: int = 5):
     """Finds songs similar to a given track using precomputed embeddings."""
@@ -492,7 +570,8 @@ def get_movie_recommendations_api(movie_title: str):
     if recommendations_df.empty: return {"error": "Could not find recommendations for this movie."} 
     
     results_df = recommendations_df.copy()
-    results_df['posterUrl'] = results_df['tmdbId'].apply(fetch_poster)
+    # fetch_poster is now using OMDb
+    results_df['posterUrl'] = results_df['tmdbId'].apply(fetch_poster) 
     results_df['embedding'] = results_df['embedding'].apply(list)
     results_df = results_df.replace({np.nan: None})
     
@@ -508,6 +587,7 @@ def find_movies_by_vibe_api(request: VibeRequest):
     if results_df.empty: return {"error": "Could not find any matches."}
     
     response_df = results_df.copy()
+    # fetch_poster is now using OMDb
     response_df['posterUrl'] = response_df['tmdbId'].apply(fetch_poster)
     response_df['embedding'] = response_df['embedding'].apply(list)
     response_df = response_df.replace({np.nan: None})
@@ -582,7 +662,8 @@ def get_random_movies_by_genre(genre: str, limit: int = 10):
     random_movies = matches.sample(n=sample_size)
     
     results_df = random_movies.copy()
-    results_df['posterUrl'] = results_df['tmdbId'].apply(fetch_poster)
+    # fetch_poster is now using OMDb
+    results_df['posterUrl'] = results_df['tmdbId'].apply(fetch_poster) 
     results_df['embedding'] = results_df['embedding'].apply(list)
     results_df = results_df.replace({np.nan: None})
     
@@ -641,7 +722,7 @@ def get_random_music_by_genre(genre: str, limit: int = 10):
 # --- NEW: "FOR YOU" RECOMMENDATION ENDPOINT ---
 @app.get("/recommend/for-you")
 def get_for_you_recommendations(token: str):
-    """Generates personalized recommendations based on a user's favorites."""
+    """Generates personalized recommendations based on a user's favorites across movies, books, and music."""
     try:
         # 1. Decode the token to get the user's ID
         decoded = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
@@ -652,36 +733,115 @@ def get_for_you_recommendations(token: str):
         if not user or not user.get('favorites'):
             return {"error": "No favorites found to generate recommendations."}
 
-        # 3. Get the embeddings for their favorite movies
-        favorite_movie_ids = [
-            fav.get('itemId')
-            for fav in user.get('favorites', [])
-            if (fav.get('type') or fav.get('itemType')) == 'movie'
-        ]
+        # 3. Collect embeddings for all favorite types
+        favorite_items = _get_user_favorites(user)
+        all_embeddings = []
 
-        favorite_embeddings = movie_df[movie_df['tmdbId'].isin(pd.Series(favorite_movie_ids).dropna().astype(int))]['embedding'].tolist()
-        if not favorite_embeddings:
-            return {"error": "No favorite movies with embeddings found."}
+        # Movies
+        movie_ids = [f["itemId"] for f in favorite_items if f["type"] == "movie" and f["itemId"]]
+        if movie_ids:
+            movie_embeds = movie_df[movie_df['tmdbId'].isin(pd.Series(movie_ids).dropna().astype(int))]['embedding'].tolist()
+            all_embeddings.extend(movie_embeds)
 
-        # 4. Calculate the user's "Taste Profile"
-        taste_profile = np.mean(np.array(favorite_embeddings), axis=0).reshape(1, -1)
-        all_embeddings = np.stack(movie_df['embedding'].values)
-        similarities = cosine_similarity(taste_profile, all_embeddings).flatten()
+        # Books
+        book_ids = [f["itemId"] for f in favorite_items if f["type"] == "book" and f["itemId"]]
+        if book_ids:
+            book_embeds = book_df[book_df['isbn'].isin(book_ids)]['embedding'].tolist()
+            all_embeddings.extend(book_embeds)
 
-        # Get top 20 results (to have more options after filtering)
-        top_indices = np.argsort(similarities)[::-1][:20]
+        # Music
+        music_ids = [f["itemId"] for f in favorite_items if f["type"] == "music" and f["itemId"]]
+        if music_ids:
+            music_embeds = music_df[music_df['track_id'].isin(music_ids)]['embedding'].tolist()
+            all_embeddings.extend(music_embeds)
+
+        if not all_embeddings:
+            return {"error": "No favorite items with embeddings found."}
+
+        # 4. Calculate the user's "Taste Profile" as the mean of all embeddings
+        taste_profile = np.mean(np.array(all_embeddings), axis=0).reshape(1, -1)
+
+        # 5. Generate recommendations for each category
+        all_recommendations = []
+        seen_ids = set()  # To avoid duplicates across categories
+
+        # Movie recommendations
+        if movie_df is not None:
+            movie_sims = cosine_similarity(taste_profile, np.stack(movie_df['embedding'].values)).flatten()
+            movie_indices = np.argsort(movie_sims)[::-1][:20]
+            movie_recs = movie_df.iloc[movie_indices]
+            movie_recs = movie_recs[~movie_recs['tmdbId'].astype(str).isin(set(map(str, movie_ids)))]
+            all_recommendations.extend(movie_recs.to_dict('records'))
+            seen_ids.update(movie_recs['tmdbId'].astype(str))
+
+        # Book recommendations
+        if book_df is not None:
+            book_sims = cosine_similarity(taste_profile, np.stack(book_df['embedding'].values)).flatten()
+            book_indices = np.argsort(book_sims)[::-1][:20]
+            book_recs = book_df.iloc[book_indices]
+            book_recs = book_recs[~book_recs['isbn'].isin(set(book_ids))]
+            all_recommendations.extend(book_recs.to_dict('records'))
+            seen_ids.update(book_recs['isbn'])
+
+        # Music recommendations
+        if music_df is not None:
+            music_sims = cosine_similarity(taste_profile, np.stack(music_df['embedding'].values)).flatten()
+            music_indices = np.argsort(music_sims)[::-1][:20]
+            music_recs = music_df.iloc[music_indices]
+            music_recs = music_recs[~music_recs['track_id'].isin(set(music_ids))]
+            music_recs = music_recs.rename(columns={"track_name": "title", "artist_name": "artist"})
+            all_recommendations.extend(music_recs.to_dict('records'))
+            seen_ids.update(music_recs['track_id'].astype(str))
+
+        # 6. Sort all recommendations by similarity (using the first category's similarity as a proxy)
+        # Note: This sorting logic can be complex and might need refinement depending on the final FE structure
+        # A simple method is to interleave the top N of each. For now, we will keep the original sorting structure.
+        if all_recommendations:
+            # We sort by a proxy similarity score, prioritizing categories found first in the list.
+            # This is a crude mix, but respects the original intent.
+            def get_proxy_sim(x):
+                if 'tmdbId' in x and 'movie_sims' in locals():
+                    try:
+                        # Find the original index of the movie in the movie_df
+                        idx = movie_df[movie_df['tmdbId'] == x['tmdbId']].index[0]
+                        return movie_sims[idx]
+                    except:
+                        return 0.0
+                elif 'isbn' in x and 'book_sims' in locals():
+                    try:
+                        idx = book_df[book_df['isbn'] == x['isbn']].index[0]
+                        return book_sims[idx]
+                    except:
+                        return 0.0
+                elif 'track_id' in x and 'music_sims' in locals():
+                    try:
+                        idx = music_df[music_df['track_id'] == x['track_id']].index[0]
+                        return music_sims[idx]
+                    except:
+                        return 0.0
+                return 0.0
+
+            all_recommendations.sort(key=get_proxy_sim, reverse=True)
+
+
+        # 7. Prepare and return the top 5 recommendations
+        final_recs = all_recommendations[:5]
+        results_df = pd.DataFrame(final_recs)
         
-        # Filter out movies the user has already favorited
-        recommended_indices = [idx for idx in top_indices if str(movie_df.iloc[idx]['tmdbId']) not in set(map(str, favorite_movie_ids))]
-        
-        # Get the final top 5
-        final_recommendations = movie_df.iloc[recommended_indices].head(5)
+        # Add posters/covers for movies and books
+        if not results_df.empty:
+            if 'tmdbId' in results_df.columns:
+                results_df['posterUrl'] = results_df['tmdbId'].apply(fetch_poster) # Uses new OMDb fetcher
+            if 'isbn' in results_df.columns:
+                results_df['coverUrl'] = results_df['isbn'].apply(fetch_book_cover)
+            
+            # Ensure proper columns for the output (e.g., embedding needs to be a list)
+            if 'embedding' in results_df.columns:
+                 results_df['embedding'] = results_df['embedding'].apply(lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
 
-        # 5. Prepare and return the response
-        results_df = final_recommendations.copy()
-        results_df['posterUrl'] = results_df['tmdbId'].apply(fetch_poster)
-        results_df = results_df.replace({np.nan: None})
-        
+            results_df = results_df.replace({np.nan: None})
+
+
         return {"recommendations": results_df.to_dict('records')}
 
     except jwt.ExpiredSignatureError:
