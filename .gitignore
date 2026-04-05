@@ -40,3 +40,8 @@ venv/
 secrets.toml
 node_modules/
 *.log
+.env
+__pycache__
+node_modules
+data/
+*.parquet
