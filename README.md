@@ -76,9 +76,5 @@ MONGO_URI=your_mongodb_uri
 4. Top matching items are returned as recommendations
 5. User favourites are stored in MongoDB
 
-## 👤 Author
-
-**Gonnela Omkar**
-GitHub: [https://github.com/GonnelaOmkar](https://github.com/GonnelaOmkar)
-Email: [omkargonnela@gmail.com](mailto:omkargonnela@gmail.com)
-
+Download dataset from: https://drive.google.com/drive/folders/1Q_2DSg8-H3vnb7C0yTQ1-2i3msVGSa5G?usp=sharing
+Place inside data/ folder
